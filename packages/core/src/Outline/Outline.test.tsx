@@ -1057,7 +1057,89 @@ describe('Outline scroll scoping', () => {
     pane.remove();
     cleanup();
   });
+
+  it('follows the page scroll when <html> scrolls the page', async () => {
+    const cleanup = mountHeadings();
+    const restorePage = scrollPageThroughHtml(1000);
+    const [intro, install, api] = items.map(
+      item => document.getElementById(item.id) as HTMLElement,
+    );
+    vi.spyOn(intro, 'getBoundingClientRect').mockReturnValue({
+      top: -500,
+    } as DOMRect);
+    const installRect = vi
+      .spyOn(install, 'getBoundingClientRect')
+      .mockReturnValue({top: 300} as DOMRect);
+    vi.spyOn(api, 'getBoundingClientRect').mockReturnValue({
+      top: 900,
+    } as DOMRect);
+
+    render(<Outline items={items} />);
+    installRect.mockReturnValue({top: -10} as DOMRect);
+    await act(async () => {
+      window.dispatchEvent(new Event('scroll'));
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    });
+
+    expect(screen.getByRole('link', {name: 'Installation'})).toHaveAttribute(
+      'aria-current',
+      'location',
+    );
+
+    restorePage();
+    cleanup();
+  });
+
+  it('lands below a fixed header and settles when <html> scrolls the page', async () => {
+    const user = userEvent.setup();
+    const cleanup = mountHeadings();
+    const restorePage = scrollPageThroughHtml(1000);
+    const install = document.getElementById('install') as HTMLElement;
+    vi.spyOn(install, 'getBoundingClientRect').mockReturnValue({
+      top: 400,
+    } as DOMRect);
+    const onNavigateEnd = vi.fn();
+
+    render(<Outline items={items} offset={48} onNavigateEnd={onNavigateEnd} />);
+    await user.click(screen.getByRole('link', {name: 'Installation'}));
+
+    expect(window.scrollBy).toHaveBeenCalledWith({
+      top: 400 - 48,
+      behavior: 'smooth',
+    });
+    expect(Element.prototype.scrollBy).not.toHaveBeenCalled();
+
+    act(() => {
+      window.dispatchEvent(new Event('scrollend'));
+    });
+    expect(onNavigateEnd).toHaveBeenCalledTimes(1);
+    expect(onNavigateEnd).toHaveBeenCalledWith('install');
+
+    restorePage();
+    cleanup();
+  });
 });
+
+/**
+ * Make `<html>` scroll the page, as `html {overflow-y: scroll}` does. Its box
+ * moves up by the page's scroll, but the scroll events go to the window.
+ */
+function scrollPageThroughHtml(scrollY: number) {
+  const html = document.documentElement;
+  html.style.overflowY = 'scroll';
+  Object.defineProperty(html, 'clientHeight', {value: 800, configurable: true});
+  Object.defineProperty(html, 'scrollHeight', {
+    value: 4000,
+    configurable: true,
+  });
+  vi.spyOn(html, 'getBoundingClientRect').mockReturnValue({
+    top: -scrollY,
+  } as DOMRect);
+  return () => {
+    html.style.overflowY = '';
+    Reflect.deleteProperty(html, 'clientHeight');
+  };
+}
 
 describe('useOutlineFromDOM', () => {
   it('collects headings from DOM container', () => {

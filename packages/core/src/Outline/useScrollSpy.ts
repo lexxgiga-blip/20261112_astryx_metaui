@@ -247,10 +247,12 @@ export function useScrollSpy({
    * (meaning the viewport).
    */
   const getScrollRoot = useCallback((): HTMLElement | null => {
-    return (
+    const root =
       scrollContainerRef?.current ??
-      (rootRef.current == null ? null : scrollingAncestor(rootRef.current))
-    );
+      (rootRef.current == null ? null : scrollingAncestor(rootRef.current));
+    // `<html>` scrolls the viewport, which sends its scroll events to the
+    // window.
+    return root === root?.ownerDocument.documentElement ? null : root;
   }, [rootRef, scrollContainerRef]);
 
   // Syncs a scroll listener on the scroll root and a window resize listener
