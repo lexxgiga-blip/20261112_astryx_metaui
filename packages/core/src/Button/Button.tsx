@@ -820,15 +820,19 @@ export function Button({
 
   // A disabled button cancels Enter and Space, its activation keys. Other
   // keys, such as Escape and the arrows, still reach the caller's handler.
-  const handleKeyDown = buttonDisabled
-    ? (e: React.KeyboardEvent<HTMLButtonElement>) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-        } else {
-          props.onKeyDown?.(e);
-        }
-      }
-    : undefined;
+  // Otherwise a held Enter is one press: a native button clicks on every
+  // auto-repeated keydown, so the repeats are cancelled after the caller has
+  // seen them.
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (buttonDisabled && (e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault();
+      return;
+    }
+    props.onKeyDown?.(e);
+    if (e.key === 'Enter' && e.repeat) {
+      e.preventDefault();
+    }
+  };
 
   // Ghost buttons are edge-compensatable — containers detect this attribute
   // via :has() and pull their own slot margins to align flush at edges.
@@ -1009,7 +1013,7 @@ export function Button({
         aria-busy={isLoadingState || props['aria-busy'] || undefined}
         aria-disabled={buttonDisabled || props['aria-disabled'] || undefined}
         onClick={handleClick}
-        {...(handleKeyDown ? {onKeyDown: handleKeyDown} : null)}>
+        onKeyDown={handleKeyDown}>
         {buttonContent}
       </LinkComponent>
     );
@@ -1034,7 +1038,7 @@ export function Button({
         aria-busy={isLoadingState || props['aria-busy'] || undefined}
         aria-disabled={buttonDisabled || props['aria-disabled'] || undefined}
         onClick={handleClick}
-        {...(handleKeyDown ? {onKeyDown: handleKeyDown} : null)}>
+        onKeyDown={handleKeyDown}>
         {buttonContent}
       </button>
     );
