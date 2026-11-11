@@ -95,6 +95,7 @@ describe('DateTimeInput typed date entry with a calendar', () => {
       min: '2019-05-01T00:00' as ISODateTimeString,
     });
     fireEvent.change(input, {target: {value: 'April 30, 31 Heisei'}});
+    fireEvent.blur(input);
     expect(onChange).not.toHaveBeenCalled();
     expectShown(input, container, 'Enter a date on or after May 1, 1 Reiwa');
   });

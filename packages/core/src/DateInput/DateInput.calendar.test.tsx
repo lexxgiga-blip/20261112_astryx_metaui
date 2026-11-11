@@ -113,6 +113,7 @@ describe('DateInput typed entry with a calendar', () => {
     expect(onChange).toHaveBeenCalledExactlyOnceWith('2019-05-01');
 
     fireEvent.change(input, {target: {value: 'May 1, 31 Heisei'}});
+    fireEvent.blur(input);
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(input).toHaveAttribute('aria-invalid', 'true');
     expectShown(
@@ -129,11 +130,6 @@ describe('DateInput typed entry with a calendar', () => {
       status: {type: 'warning', message: 'Check the date'},
     });
     fireEvent.change(input, {target: {value: '12/30/1404 AP'}});
-    expectShown(
-      input,
-      container,
-      'This date does not exist in the Persian Calendar',
-    );
     fireEvent.blur(input);
     expect(input).toHaveValue('12/30/1404 AP');
     expectShown(
@@ -152,6 +148,7 @@ describe('DateInput typed entry with a calendar', () => {
     });
     // A Gregorian year typed into a Buddhist field is Buddhist year 2026.
     fireEvent.change(input, {target: {value: '11/2/2026'}});
+    fireEvent.blur(input);
     expect(onChange).not.toHaveBeenCalled();
     expectShown(
       input,
@@ -172,8 +169,10 @@ describe('DateInput typed entry with a calendar', () => {
       'Invalid date',
     );
     fireEvent.change(input, {target: {value: '12/30/1404 AP'}});
+    fireEvent.blur(input);
     expectShown(input, container, 'does not exist in the Persian Calendar');
     fireEvent.change(input, {target: {value: '1/1/1406 AP'}});
+    fireEvent.blur(input);
     expectShown(input, container, 'on or before Dey 10, 1405 AP');
   });
 

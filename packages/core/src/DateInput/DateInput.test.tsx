@@ -362,6 +362,46 @@ describe('DateInput', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it('defers nonexistent typed date error until blur', () => {
+    render(<DateInput label="Due" onChange={() => {}} max="2026-12-31" />);
+
+    const input = screen.getByRole('combobox');
+    fireEvent.change(input, {target: {value: '02/31/2026'}});
+
+    expect(input).not.toHaveAttribute('aria-invalid');
+    expect(screen.queryByText(/does not exist/i)).not.toBeInTheDocument();
+
+    fireEvent.blur(input);
+
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByText(/does not exist/i)).toBeInTheDocument();
+  });
+
+  it('defers nonexistent typed date error until Enter', () => {
+    render(<DateInput label="Due" onChange={() => {}} max="2026-12-31" />);
+
+    const input = screen.getByRole('combobox');
+    fireEvent.change(input, {target: {value: '02/31/2026'}});
+
+    expect(input).not.toHaveAttribute('aria-invalid');
+    expect(screen.queryByText(/does not exist/i)).not.toBeInTheDocument();
+
+    fireEvent.keyDown(input, {key: 'Enter'});
+
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByText(/does not exist/i)).toBeInTheDocument();
+  });
+
+  it('defers an out-of-range typed date error until blur', () => {
+    render(<DateInput label="Due" onChange={() => {}} max="2026-02-15" />);
+    const input = screen.getByRole('combobox');
+    fireEvent.change(input, {target: {value: '03/01/2026'}});
+    expect(input).not.toHaveAttribute('aria-invalid');
+    expect(screen.queryByText(/on or before/i)).not.toBeInTheDocument();
+    fireEvent.blur(input);
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+  });
+
   // --- P1: Input disabled during isBusy (isLoading) ---
 
   it('blocks input and button without native disabled when isLoading is true', () => {

@@ -81,7 +81,7 @@ export interface TypedDate {
   errorMessage: (result: CalendarDateParseResult) => string;
 }
 
-/** The rejection a result shows: errors of complete text, or of committed text. */
+/** The rejection of a result. Unreadable text is rejected at once; other rejections wait for Enter or blur. */
 export function typedDateError(
   result: CalendarDateParseResult | null,
   isCommitted: boolean,
@@ -97,7 +97,7 @@ export function typedDateError(
   }
   if (
     (result.kind === 'nonexistent' || result.kind === 'outOfRange') &&
-    (result.isComplete || isCommitted)
+    isCommitted
   ) {
     return result.kind;
   }
