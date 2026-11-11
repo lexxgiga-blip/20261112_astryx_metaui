@@ -48,6 +48,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -83,6 +84,7 @@ import {matchesMediaQuery} from '../utils/coarsePointer';
 import {useMergedRefs} from '../hooks/useMergedRefs';
 import {useScrollLock} from '../hooks/useScrollLock';
 import {useFocusRegionContainment} from '../hooks/useFocusTrap';
+import {isRtlElement} from '../hooks/isRtlElement';
 import {
   registerEnglishFallback,
   useComponentTranslator,
@@ -553,6 +555,7 @@ export function MobileNav({
   const [resolvedSide, setResolvedSide] = useState<'start' | 'end'>(
     side === 'auto' ? 'end' : side,
   );
+  const [autoSideResolved, setAutoSideResolved] = useState(side !== 'auto');
 
   // Resolve which edge the drawer slides from. Deliberately its own effect,
   // declared before the open/close effect below so the trigger is still the
@@ -561,8 +564,11 @@ export function MobileNav({
   // CSS hold runs from the commit that started the slide-out and does not
   // restart, so a fresh full delay could land after the drawer had already
   // stopped being rendered — #4290 again.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isOpen) {
+      if (side === 'auto') {
+        setAutoSideResolved(false);
+      }
       return;
     }
 
@@ -571,14 +577,17 @@ export function MobileNav({
       if (trigger && trigger !== document.body) {
         const rect = trigger.getBoundingClientRect();
         const triggerCenter = rect.left + rect.width / 2;
+        const isRtl = isRtlElement(trigger);
         // eslint-disable-next-line @eslint-react/set-state-in-effect -- side is resolved from trigger layout immediately before showModal()
         setResolvedSide(
-          triggerCenter < window.innerWidth / 2 ? 'start' : 'end',
+          triggerCenter < window.innerWidth / 2 !== isRtl ? 'start' : 'end',
         );
       }
+      setAutoSideResolved(true);
     } else {
       // eslint-disable-next-line @eslint-react/set-state-in-effect -- side prop changes must update the open dialog placement
       setResolvedSide(side);
+      setAutoSideResolved(true);
     }
   }, [isOpen, side]);
 
@@ -590,7 +599,7 @@ export function MobileNav({
       return;
     }
 
-    if (isOpen) {
+    if (isOpen && autoSideResolved) {
       releaseHoldRef.current?.();
       releaseHoldRef.current = null;
       if (!dialog.open) {
@@ -609,7 +618,7 @@ export function MobileNav({
         entrance: drawerRef.current,
         capMs: MAX_EXIT_MS,
       });
-    } else if (dialog.open) {
+    } else if (!isOpen && dialog.open) {
       releaseHoldRef.current?.();
       releaseHoldRef.current = null;
       closeTimeoutRef.current = setTimeout(() => {
@@ -632,7 +641,7 @@ export function MobileNav({
       releaseHoldRef.current?.();
       releaseHoldRef.current = null;
     };
-  }, [isOpen, releasePresentation]);
+  }, [autoSideResolved, isOpen, releasePresentation]);
 
   // Close the native dialog on unmount if it's still open. Inside AppShell the
   // drawer is mounted in an <Activity> that switches to mode="hidden" when the
@@ -703,13 +712,20 @@ export function MobileNav({
   );
 
   const isStart = resolvedSide === 'start';
+  const mergedDialogRef = useMergedRefs(ref, dialogRef);
+  // Do not mount an auto-side dialog for the opening commit. The layout effect
+  // above resolves the trigger's side first; mounting after that state update
+  // makes the first browser frame use the correct entrance transform.
+  if (isOpen && side === 'auto' && !autoSideResolved) {
+    return null;
+  }
   const navigationLabel =
     label ??
     (typeof header === 'string' ? header : t('@astryx.mobileNav.navigation'));
 
   return (
     <dialog
-      ref={useMergedRefs(ref, dialogRef)}
+      ref={mergedDialogRef}
       id={dialogId}
       {...mergeProps(
         themeProps('mobile-nav', {side: resolvedSide}),
