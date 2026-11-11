@@ -179,7 +179,7 @@ const sessionsByOptions = new WeakMap<
 >();
 
 /** Records `controller` as mounted with `options`; returns the removal. */
-function mountSession(
+export function mountSession(
   options: ListReorderOptions,
   controller: ListReorderController,
 ): () => void {
@@ -565,6 +565,8 @@ interface PendingMove {
  */
 interface PendingAnnouncement {
   readonly row: HTMLElement;
+  /** The moved row's key: a re-rendered row with it has landed too. */
+  readonly key?: Key;
   readonly to: number;
   /** Read as the move lands, so it names the rows as they are named then. */
   readonly landed: () => string;
@@ -573,7 +575,7 @@ interface PendingAnnouncement {
 }
 
 /** The strings the controller announces, from the translator. */
-interface ReorderMessages {
+export interface ReorderMessages {
   /**
    * A row's place in reorder mode: its name, place and count. Also the names
    * of the rows before and after it, null at the top or the end.
@@ -589,6 +591,11 @@ interface ReorderMessages {
   refused: (label: string) => string;
   /** A row's name when it shows no text: its place. */
   itemAt: (position: number) => string;
+  /**
+   * A reorder mode move the app did not apply by the end of the task: the
+   * row's name. Without it, the row's unchanged place is announced.
+   */
+  notMoved?: (label: string) => string;
   /** Reorder mode ended: the row's name and its place. */
   modeDone: (label: string, position: number, total: number) => string;
   pickedUp: (position: number, total: number) => string;
@@ -596,7 +603,7 @@ interface ReorderMessages {
   cancelled: (position: number, total: number) => string;
 }
 
-function messagesFrom(t: TranslatorFn): ReorderMessages {
+export function messagesFrom(t: TranslatorFn): ReorderMessages {
   return {
     place: (label, position, total, previous, next) =>
       previous == null
@@ -931,6 +938,10 @@ export class ListReorderController implements ListReorderSession {
 
   /** This list's handle in `row`, if it has one: a nested list's are its own. */
   private handleIn(row: HTMLElement): Element | null {
+    // An attached item may be its own handle.
+    if (this.keys.has(row)) {
+      return row;
+    }
     for (const handle of reorderHandlesIn(row)) {
       if (this.keys.has(handle)) {
         return handle;
@@ -1729,7 +1740,7 @@ export class ListReorderController implements ListReorderSession {
     const announcement = this.announcement;
     if (
       announcement != null &&
-      this.rows.read(list).indexOf(announcement.row) === announcement.to
+      this.hasLanded(this.rows.read(list), announcement)
     ) {
       this.announcement = null;
       if (this.announcementFallback != null) {
@@ -1943,7 +1954,18 @@ export class ListReorderController implements ListReorderSession {
    * row a place at once, and Escape ends the mode, keeping the moves. Space
    * and Enter toggle the mode through the handle's click.
    */
-  keyDown(handle: HTMLElement | null, event: KeyboardEvent): void {
+  keyDown(
+    handle: HTMLElement | null,
+    event: Pick<
+      KeyboardEvent,
+      | 'key'
+      | 'altKey'
+      | 'ctrlKey'
+      | 'metaKey'
+      | 'preventDefault'
+      | 'stopPropagation'
+    >,
+  ): void {
     // A modified key is a browser or assistive-technology shortcut.
     if (
       handle == null ||
@@ -2007,9 +2029,12 @@ export class ListReorderController implements ListReorderSession {
     this.lastStep = delta;
     this.announceWhenCommitted({
       row,
+      key,
       to,
       landed: () => this.placeIn(this.rows.read(list), to),
-      kept: this.placeIn(rows, index),
+      kept:
+        this.messages?.notMoved?.(this.nameOf(row, index)) ??
+        this.placeIn(rows, index),
       politeness: undefined,
     });
     if (this.animates) {
@@ -2052,6 +2077,29 @@ export class ListReorderController implements ListReorderSession {
   }
 
   /**
+   * Whether the announced move is in `rows`: its row, or a row rendered
+   * again with its key, at its new place.
+   */
+  private hasLanded(
+    rows: ReadonlyArray<HTMLElement>,
+    announcement: PendingAnnouncement,
+  ): boolean {
+    const at = rows[announcement.to];
+    return (
+      at != null &&
+      (at === announcement.row ||
+        (announcement.key != null && this.keyOf(at) === announcement.key))
+    );
+  }
+
+  /**
+   * Runs as a move's end-of-task fallback starts, before it announces that
+   * the row stayed. A List's commits have run by then; an attached
+   * container reads its items again here.
+   */
+  protected beforeFallback(): void {}
+
+  /**
    * Announces a move once it commits; if the consumer keeps the order by the
    * end of the task, announces that the row stayed instead.
    */
@@ -2062,6 +2110,7 @@ export class ListReorderController implements ListReorderSession {
     }
     this.announcementFallback = setTimeout(() => {
       this.announcementFallback = null;
+      this.beforeFallback();
       const pending = this.announcement;
       if (pending != null) {
         this.announcement = null;
@@ -2288,7 +2337,7 @@ function HintButton({
  * a pointer or a finger can reorder by tapping the handle, the moves, then
  * Done.
  */
-function ListReorderModeHint({
+export function ListReorderModeHint({
   controller,
 }: {
   controller: ListReorderController;
