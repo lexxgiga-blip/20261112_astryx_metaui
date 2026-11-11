@@ -101,7 +101,7 @@ describe('useClickableContainer navigation — new tab (target="_blank")', () =>
     expect(open).toHaveBeenCalledWith(
       'https://example.com/docs',
       '_blank',
-      'noopener',
+      'noopener,noreferrer',
     );
   });
 
