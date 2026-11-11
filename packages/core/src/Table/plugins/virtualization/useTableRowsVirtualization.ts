@@ -6,10 +6,14 @@
  * @file useTableRowsVirtualization.ts
  * @input Positive finite CSS-pixel row pitch and first-frame viewport height
  * @output Stable opaque TableVirtualizationCapability and public config type
- * @position Geometry-only opt-in; Table owns data, admission and rendering
+ * @position Geometry-only opt-in; Table owns data, admission and rendering.
+ *   The hook registers Table's windowing implementation, so a Table in an app
+ *   that never calls it carries no windowing code.
  */
 import {useMemo} from 'react';
 import {sharedKey} from '../../../utils/sharedRealm';
+import {registerTableWindowing} from '../../tableWindowing';
+import {tableWindowing} from './tableWindowingImpl';
 
 // A registered key, so a swizzled Table reads a capability the package's hook
 // made, and the package reads a copy's.
@@ -71,6 +75,7 @@ export function useTableRowsVirtualization({
   rowHeight,
   initialViewportHeight,
 }: UseTableRowsVirtualizationConfig): TableVirtualizationCapability {
+  registerTableWindowing(tableWindowing);
   return useMemo(
     () =>
       Object.freeze({
