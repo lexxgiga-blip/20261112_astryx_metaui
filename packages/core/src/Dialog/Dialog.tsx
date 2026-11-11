@@ -315,12 +315,25 @@ const styles = stylex.create({
   // Inline wrapper mirrors the dialog's visual styles without <dialog> behavior
   inlineWrapper: {
     padding: 0,
-    borderWidth: 0,
-    borderStyle: 'none',
     backgroundColor: colorVars['--color-background-surface'],
     '--_dialog-radius': radiusVars['--radius-container'],
     borderRadius: 'var(--_dialog-radius)',
     boxShadow: shadowVars['--shadow-high'],
+    // Forced colors drops box-shadow, which is this surface's only edge, so it
+    // would run straight into what is under it (WCAG 1.4.11). The border
+    // exists only in forced colors; nothing changes anywhere else.
+    borderWidth: {
+      default: 0,
+      '@media (forced-colors: active)': '1px',
+    },
+    borderStyle: {
+      default: 'none',
+      '@media (forced-colors: active)': 'solid',
+    },
+    borderColor: {
+      default: null,
+      '@media (forced-colors: active)': 'CanvasText',
+    },
     display: 'flex',
     flexDirection: 'column',
     height: 'fit-content',
