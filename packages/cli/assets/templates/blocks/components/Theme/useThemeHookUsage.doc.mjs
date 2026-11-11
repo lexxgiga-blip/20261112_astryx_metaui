@@ -4,6 +4,7 @@
 export const doc = {
   type: 'block',
   exampleFor: 'useTheme',
+  alsoExampleFor: ['useThemeName'],
   name: 'useTheme — Token Values',
   displayName: 'useTheme — Token Values',
   description:
