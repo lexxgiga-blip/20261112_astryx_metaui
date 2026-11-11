@@ -685,12 +685,9 @@ Current gaps are observable facts, not current target behavior:
 - In a browser that light-dismisses at the release, a Popover closes when a
   control's own drag that began outside it ends outside it (INV7).
 - Some layers anchor to the control that the press scales, so a press moves
-  the layer and can narrow it (INV22). DropdownMenu anchors its menu to its
-  Button. A finger held on the trigger opens the menu from the pressed box and
-  moves it while the menu is open. In WebKit, a mouse press also scales the
-  trigger, so the menu that the press opens sits off the unpressed box until
-  the release. In Chromium, a mouse press does not scale the trigger, so the
-  menu keeps its place. Popover with an `anchorRef` or render-prop trigger
+  the layer and can narrow it (INV22). Inside a ButtonGroup, DropdownMenu
+  anchors its menu to its Button. With `renderTrigger`, it anchors the menu to
+  the caller's control. Popover with an `anchorRef` or render-prop trigger
   anchors to the caller's control, which a Button scales on press.
   MultiSelector and ComplexSelector anchor to their own control. Ghost and
   secondary Selector place a list that opens on a press from the trigger's
