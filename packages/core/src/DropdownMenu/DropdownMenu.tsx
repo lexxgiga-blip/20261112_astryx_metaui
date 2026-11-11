@@ -49,6 +49,9 @@ import {readAccessibleName} from '../utils/accessibleName';
 import * as stylex from '@stylexjs/stylex';
 import {usePopoverInternal} from '../Popover/usePopover';
 import {holdEntranceInput} from '../Layer/holdEntranceInput';
+import {reducedMotionFade} from '../motion/reducedMotion';
+import {createRectMorphSurfaceMotion} from '../Popover/popoverSurfaceMotion';
+import {usePopoverSurfaceMotion} from '../Popover/usePopoverSurfaceMotion';
 import {
   claimPress,
   currentGesture,
@@ -78,7 +81,7 @@ import {
 import {useIsomorphicLayoutEffect} from '../hooks/useIsomorphicLayoutEffect';
 import {useMergedRefs} from '../hooks/useMergedRefs';
 import {useInternalListFocus} from '../hooks/useListFocus';
-import {useDropdownMenuPress} from '../hooks/useMenuPress';
+import {MENU_PRESS_LONG_PRESS_MS, useMenuPress} from '../hooks/useMenuPress';
 import type {MenuPressPointerType} from '../hooks/menuPressGesture';
 import {useTypeahead} from '../hooks/useTypeahead';
 import {useFocusReturnVisibility} from '../hooks/useFocusReturnVisibility';
@@ -126,6 +129,12 @@ import {
 import english from '../i18n/generated-english/DropdownMenu/DropdownMenu.generated';
 
 registerEnglishFallback(english);
+
+/** The touch grow plays on the shared rect morph, with taps held until it shows. */
+const MENU_SURFACE_MOTION = {
+  createMotion: createRectMorphSurfaceMotion,
+  holdUntilFirstFrame: true,
+};
 
 // The menu's own lower cap on the placement axis; the viewport cap underneath
 // it is the layer runtime's (spec:AST-059 FR3).
@@ -468,10 +477,11 @@ interface DropdownMenuDataProps extends DropdownMenuBaseProps {
    * Surface used to present the actions. Pass a value selected by product
    * policy (for example, a compact-touch media query) when the presentation
    * should adapt. Bottom-sheet presentation is intended for short action sets.
-   * Omitted, the menu is the anchored popover. Under a finger, on every
-   * device, the finger that opened it picks as UIMenu's does, once it has
-   * moved. `'popover'` pins the anchored popover with the pointer behavior on
-   * every device (the opening press follows the settle rule).
+   * Omitted, the menu is the anchored popover. On every device, a finger or
+   * a pen opens it as it presses the trigger, as UIMenu's pull-down button
+   * does. The finger that opened it picks once it has moved. `'popover'`
+   * pins the anchored popover with the pointer behavior on every device. A
+   * finger held for 500 ms opens it, and the settle rule decides its release.
    */
   presentation?: DropdownMenuPresentation;
   items: DropdownMenuOption[];
@@ -480,9 +490,11 @@ interface DropdownMenuDataProps extends DropdownMenuBaseProps {
 
 interface DropdownMenuCompoundProps extends DropdownMenuBaseProps {
   /**
-   * `'popover'` pins the pointer behavior on every device (the opening press
-   * follows the settle rule). Omitted, on every device, the finger
-   * that opened the menu picks as UIMenu's does, once it has moved.
+   * `'popover'` pins the pointer behavior on every device. A finger held for
+   * 500 ms opens the menu, and the settle rule decides its release. Omitted,
+   * on every device, a finger or a pen opens the menu as it presses, as
+   * UIMenu's pull-down button does. The finger that opened it picks once it
+   * has moved.
    */
   presentation?: 'popover';
   items?: undefined;
@@ -1011,6 +1023,19 @@ function DropdownMenuPopover({
     }
   }, []);
 
+  // The touch presentation's grow out of the trigger and shrink back into
+  // it, on the shared rect morph (Popover/usePopoverSurfaceMotion.ts).
+  const surfaceMotion = usePopoverSurfaceMotion(MENU_SURFACE_MOTION);
+  // Whether a finger or a pen opened the menu, a tap's open at its lift
+  // included, until the layer shows.
+  const isTouchOpenRef = useRef(false);
+  // The pointer of the latest press on the trigger: a tap's click opens the
+  // menu after its press ended.
+  const triggerPointerTypeRef = useRef<string | null>(null);
+  // Runs as the menu opens, before it paints; set once `usePopoverInternal`
+  // has returned the surface it presents.
+  const presentSurfaceRef = useRef<() => void>(() => {});
+
   // Focus lands somewhere stated when the menu closes. A press outside that
   // landed on a focusable control has already moved focus there; leave it.
   // Otherwise — a row acted, Escape, a press on nothing — focus returns to
@@ -1081,6 +1106,10 @@ function DropdownMenuPopover({
   const handleLayerShow = useCallback(() => {
     acceptedOpenRef.current = true;
     holdOpeningPressRef.current();
+    // The grow takes the CSS entrance off first, so the entrance hold below
+    // only holds an entrance that plays.
+    presentSurfaceRef.current();
+    isTouchOpenRef.current = false;
     holdEntranceRef.current();
     resetFocusReturn();
     if (renderTrigger != null) {
@@ -1111,6 +1140,7 @@ function DropdownMenuPopover({
   const popover = usePopoverInternal({
     onHide: handleLayerHide,
     onShow: handleLayerShow,
+    onCloseStart: surfaceMotion.closeStart,
     hasLightDismiss: true,
     // The menu, not the layer, owns what a touch outside that pans does.
     ownsOutsidePan: true,
@@ -1131,6 +1161,21 @@ function DropdownMenuPopover({
     // each frame its own style animates.
     xstyle: layerAnimations[placement],
   });
+  // The layer's show handler calls this as the menu opens. It reads the
+  // surface and the trigger when it runs, so a render-time store is safe.
+  presentSurfaceRef.current = () => {
+    const surface = popover.contentRef.current;
+    // A finger's or a pen's open grows the menu. Under Reduce Motion the
+    // layer's own entrance plays: it only fades in, where the menu rests.
+    surfaceMotion.present(
+      surface,
+      buttonRef.current,
+      null,
+      pressTouchModel === 'uikit' &&
+        isTouchOpenRef.current &&
+        reducedMotionFade(surface) == null,
+    );
+  };
 
   const closeMenu = useCallback(() => {
     popover.hide();
@@ -1367,6 +1412,9 @@ function DropdownMenuPopover({
       modality: 'keyboard' | 'pointer' = 'keyboard',
       notifyClick = false,
     ): boolean => {
+      if (modality === 'keyboard') {
+        isTouchOpenRef.current = false;
+      }
       // An unavailable trigger never opens the menu. Button keeps an
       // aria-disabled trigger focusable for its tooltip and swallows only
       // Enter and Space, so the arrow keys, a press and a click would still
@@ -1447,6 +1495,7 @@ function DropdownMenuPopover({
         focusForLastInput(buttonRef.current, {preventScroll: true});
       }
       openingPressRef.current = {gesture: currentGesture()};
+      isTouchOpenRef.current = pointerType !== 'mouse';
       const didOpen = openAndFocus('pointer', true);
       // A mouse can release away from the trigger, or the trigger can move
       // away under it. So the layer claims a mouse's press, and that release
@@ -1474,15 +1523,16 @@ function DropdownMenuPopover({
   // The press model: the row under a release acts, the highlight follows a
   // held pointer. A mouse released outside the menu dismisses it; a finger
   // released outside leaves it open, so the hook never calls onDismiss then.
-  const menuPress = useDropdownMenuPress({
+  const menuPress = useMenuPress({
     menuRef: listRef,
     triggerRef: buttonRef,
     itemSelector: MENU_ITEM_SELECTOR,
     onTriggerPress: handleTriggerPress,
     onDismiss: closeMenu,
-    // Under a finger, on every device, the opening finger picks as UIMenu's
-    // does. `presentation="popover"` pins the pointer model.
-    touchModel: pressTouchModel,
+    // A set delay keeps the released finger wait, which the popover
+    // presentation uses. Unset, a finger opens the menu as UIMenu does.
+    longPressDelayMs:
+      pressTouchModel === 'pointer' ? MENU_PRESS_LONG_PRESS_MS : undefined,
   });
   cancelMenuPressRef.current = menuPress.cancel;
 
@@ -1496,6 +1546,10 @@ function DropdownMenuPopover({
       // activation): treat it as keyboard so those users still land on the
       // first item. Real pointer clicks report detail >= 1.
       const modality = e.detail === 0 ? 'keyboard' : 'pointer';
+      isTouchOpenRef.current =
+        modality === 'pointer' &&
+        (triggerPointerTypeRef.current === 'touch' ||
+          triggerPointerTypeRef.current === 'pen');
       if (isControlled) {
         if (controlledIsOpen) {
           onClick?.();
@@ -1711,12 +1765,17 @@ function DropdownMenuPopover({
     [triggerRef, consumerButtonRef],
   );
 
+  const handleTriggerPointerDown = (event: React.PointerEvent<HTMLElement>) => {
+    triggerPointerTypeRef.current = event.pointerType;
+    menuPress.triggerProps.onPointerDown(event);
+  };
+
   const triggerProps: DropdownMenuTriggerProps = {
     ref: triggerRef,
     id: triggerId,
     onClick: handleButtonClick,
     onClickCapture: handleTriggerClickCapture,
-    onPointerDown: menuPress.triggerProps.onPointerDown,
+    onPointerDown: handleTriggerPointerDown,
     onContextMenu: menuPress.triggerProps.onContextMenu,
     onKeyDown: handleButtonKeyDown,
     // The caller's control paints its own ring, and the menu's focus return
@@ -1752,7 +1811,7 @@ function DropdownMenuPopover({
           onKeyDown={handleButtonKeyDown}
           onPointerDown={event => {
             button.onPointerDown?.(event);
-            menuPress.triggerProps.onPointerDown(event);
+            handleTriggerPointerDown(event);
           }}
           onContextMenu={event => {
             button.onContextMenu?.(event);

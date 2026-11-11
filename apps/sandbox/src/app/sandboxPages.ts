@@ -106,10 +106,22 @@ export const categories: SandboxCategory[] = [
           'An alert over a toast and a dialog closed after a save, on a page that scrolls with the document, to check on a phone',
       },
       {
+        name: 'Menu Press Cases',
+        href: '/pages/menu-press-cases/',
+        description:
+          'A DropdownMenu in a fixed top bar that opens as a finger presses it, and one in the content, on a page that scrolls with the document',
+      },
+      {
         name: 'BottomSheet Pull',
         href: '/pages/bottom-sheet-pull/',
         description:
           'A BottomSheet of rows over a page that scrolls with the document, to check a slow pull and a tap on a phone',
+      },
+      {
+        name: 'Menu Grow Cases',
+        href: '/pages/menu-grow-cases/',
+        description:
+          'Large DropdownMenus and a Popover that grow out of their trigger: tall, wide, many rows, nested, at the edges and flipped, on a page that scrolls with the document',
       },
       {
         name: 'List Reorder Cases',
