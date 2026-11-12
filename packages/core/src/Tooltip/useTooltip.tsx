@@ -6,7 +6,8 @@
  * @file useTooltip.tsx
  * @input Uses useLayer, useTouchTriggerInternal, React hooks
  * @output Exports useTooltip hook with stable trigger refs for hover/focus/tap tooltips
- *   and imperative show() and hide() for an app-built toggle trigger
+ *   and imperative show() and hide() for an app-built toggle trigger, and
+ *   useTooltipInternal, its Core-only form with the `isReason` option
  * @position Layer hook; builds on useLayer for tooltip behavior
  *
  * SYNC: When modified, update:
@@ -23,6 +24,12 @@ import {
   type RefCallback,
 } from 'react';
 import {TooltipPresentInterestContext} from './tooltipPresentInterest';
+import {useIsomorphicLayoutEffect} from '../hooks/useIsomorphicLayoutEffect';
+import {
+  isCoveredByTooltipReason,
+  setTooltipReason,
+  watchTooltipReason,
+} from '../privateAttributes/tooltipReason.stylex';
 import {createTriggerFocusGate, isFocusOnTrigger} from '../utils/triggerFocus';
 import * as stylex from '@stylexjs/stylex';
 import {
@@ -276,6 +283,37 @@ export interface TooltipReturn {
  */
 
 export function useTooltip(options: TooltipOptions = {}): TooltipReturn {
+  return useTooltipInternal(options);
+}
+
+/** Core-only options of `useTooltip`. */
+export interface InternalTooltipOptions extends TooltipOptions {
+  /**
+   * The tooltip gives a reason for the state of the control it covers, such
+   * as why it is disabled. While it is enabled, it marks its trigger, and
+   * every other tooltip on that control, inside it, or on the wrapper of its
+   * field renders no layer: it neither shows nor adds to the control's
+   * accessible description.
+   */
+  isReason?: boolean;
+  /**
+   * The tooltip shows its field's own status message. A reason never covers
+   * it, because the field must show its status.
+   */
+  isStatus?: boolean;
+  /**
+   * The tooltip's trigger is its own control, such as InfoTip's button. A
+   * reason never covers it.
+   */
+  hasOwnControl?: boolean;
+}
+
+/**
+ * `useTooltip` with Core-only options. Not exported from the Tooltip entry.
+ */
+export function useTooltipInternal(
+  options: InternalTooltipOptions = {},
+): TooltipReturn {
   const {
     placement = 'above',
     alignment = 'center',
@@ -288,6 +326,9 @@ export function useTooltip(options: TooltipOptions = {}): TooltipReturn {
     isDefaultOpen = false,
     onShow,
     onHide,
+    isReason = false,
+    isStatus = false,
+    hasOwnControl = false,
   } = options;
 
   // A tooltip stays open while its trigger is hovered, so it must never settle
@@ -303,7 +344,7 @@ export function useTooltip(options: TooltipOptions = {}): TooltipReturn {
   const {
     ref: layerRef,
     anchorId: layerAnchorId,
-    show: showLayer,
+    show: showLayerNow,
     hide: hideLayer,
     isOpen: isLayerOpen,
     id: layerId,
@@ -312,9 +353,38 @@ export function useTooltip(options: TooltipOptions = {}): TooltipReturn {
 
   const popoverXstyle = styles.container;
 
+  // A disabled reason is the only tooltip its control shows. While a reason
+  // tooltip covers this tooltip's trigger, this one renders no layer, so it
+  // neither shows nor adds to the control's accessible description. Coverage
+  // is read when the tooltip would show and when the owner module tells it a
+  // mark changed.
+  const [isCovered, setIsCovered] = useState(false);
+  const isCoveredRef = useRef(false);
+
   const showTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
+  // The app's show() holds the tooltip open until hide(), Escape, a press or
+  // scroll outside, or focus leaving the trigger and the tooltip. A held
+  // tooltip is a press on its own trigger, so a reason does not cover it.
+  const isHeldRef = useRef(false);
+  const isCoveredNow = useCallback(() => {
+    const trigger = triggerRef.current;
+    return (
+      !isReason &&
+      !isStatus &&
+      !hasOwnControl &&
+      !isHeldRef.current &&
+      trigger != null &&
+      isCoveredByTooltipReason(trigger)
+    );
+  }, [isReason, isStatus, hasOwnControl]);
+  // The after-render sync below records a covered tooltip's state.
+  const showLayer = useCallback(() => {
+    if (!isCoveredNow()) {
+      showLayerNow();
+    }
+  }, [isCoveredNow, showLayerNow]);
   // Set only by a Core component that mounts the tooltip on interaction.
   const presentInterest = use(TooltipPresentInterestContext);
   // Whether the tooltip is enabled now, for a show that runs after a render
@@ -357,12 +427,26 @@ export function useTooltip(options: TooltipOptions = {}): TooltipReturn {
   const latestRef = useRef({isOpen, isLayerOpen, onShow, onHide});
   latestRef.current = {isOpen, isLayerOpen, onShow, onHide};
 
-  // The app's show() holds the tooltip open until hide(), Escape, a press or
-  // scroll outside, or focus leaving the trigger and the tooltip.
-  const isHeldRef = useRef(false);
+  // Records whether a reason covers this tooltip now. An uncontrolled open
+  // tooltip that a reason comes to cover closes; a controlled one keeps the
+  // caller's `isOpen` and renders no layer until the reason ends.
+  const syncCoverage = useCallback(() => {
+    const next = isCoveredNow();
+    if (next === isCoveredRef.current) {
+      return;
+    }
+    isCoveredRef.current = next;
+    const latest = latestRef.current;
+    if (next && latest.isLayerOpen && latest.isOpen === undefined) {
+      hideLayer();
+    }
+    setIsCovered(next);
+  }, [isCoveredNow, hideLayer]);
+
   const [isHeldState, setIsHeldState] = useState(false);
   const setHeld = useCallback((next: boolean) => {
     isHeldRef.current = next;
+    syncCoverage();
     setIsHeldState(next);
   }, []);
 
@@ -699,6 +783,8 @@ export function useTooltip(options: TooltipOptions = {}): TooltipReturn {
     opensOnFocus,
     presentInterest,
     answerTap,
+    isReason,
+    syncCoverage,
   });
   handlersRef.current = {
     handleMouseEnter,
@@ -716,6 +802,8 @@ export function useTooltip(options: TooltipOptions = {}): TooltipReturn {
     opensOnFocus,
     presentInterest,
     answerTap,
+    isReason,
+    syncCoverage,
   };
 
   // Removes the attached trigger's listeners (the trigger ref callback's
@@ -769,6 +857,13 @@ export function useTooltip(options: TooltipOptions = {}): TooltipReturn {
     el.addEventListener('focusout', onFocusOut);
     el.addEventListener('focusout', onHeldFocusOut);
     triggerRef.current = el;
+    if (latest().isReason) {
+      setTooltipReason(el, isEnabledRef.current);
+    }
+    const stopWatchingReasons = latest().isReason
+      ? null
+      : watchTooltipReason(() => latest().syncCoverage());
+    latest().syncCoverage();
 
     // A trigger that attaches again after its wiring was removed
     // (DropdownMenu's Button as its menu closes) missed the focus that
@@ -829,6 +924,10 @@ export function useTooltip(options: TooltipOptions = {}): TooltipReturn {
       el.removeEventListener('focusout', onFocusOut);
       el.removeEventListener('focusout', onHeldFocusOut);
       stopPressTrackingRef.current?.();
+      if (latest().isReason) {
+        setTooltipReason(el, false);
+      }
+      stopWatchingReasons?.();
       if (triggerRef.current === el) {
         triggerRef.current = null;
       }
@@ -862,6 +961,15 @@ export function useTooltip(options: TooltipOptions = {}): TooltipReturn {
     [layerRef, interactionRef],
   );
 
+  // Syncs a reason tooltip's mark on its trigger with its enabled state,
+  // before its children's passive effects read it.
+  useIsomorphicLayoutEffect(() => {
+    const trigger = triggerRef.current;
+    if (isReason && trigger != null) {
+      setTooltipReason(trigger, isEnabled);
+    }
+  }, [isReason, isEnabled]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -884,14 +992,16 @@ export function useTooltip(options: TooltipOptions = {}): TooltipReturn {
     }
     if (isOpen) {
       clearTimeouts();
-      showLayer();
+      // The caller's value stands under a reason too; renderTooltip renders
+      // no layer while a reason covers the trigger.
+      showLayerNow();
     } else {
       clearTimeouts();
       // A hold ends when the consumer closes the tooltip.
       dropHold();
       hideLayer();
     }
-  }, [isOpen, clearTimeouts, showLayer, hideLayer, dropHold]);
+  }, [isOpen, clearTimeouts, showLayerNow, hideLayer, dropHold]);
 
   // Dismiss on Escape (WCAG 1.4.13 — dismissible) through the shared layer
   // stack. A visible tip is the top-most layer, so it takes the press and
@@ -947,6 +1057,9 @@ export function useTooltip(options: TooltipOptions = {}): TooltipReturn {
       children: ReactNode,
       props?: Omit<ContextRenderProps, 'positioning'>,
     ): ReactNode => {
+      if (isCovered) {
+        return null;
+      }
       const renderPlacement = props?.placement ?? placement;
       const renderProps = {
         placement: renderPlacement,
@@ -984,6 +1097,7 @@ export function useTooltip(options: TooltipOptions = {}): TooltipReturn {
       cancelHide,
       scheduleHide,
       contentRefs,
+      isCovered,
     ],
   );
 
