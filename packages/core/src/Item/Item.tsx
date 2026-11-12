@@ -69,7 +69,12 @@ import {
 } from '../hooks/useClickableContainer';
 import {useDevWarning} from '../hooks/useDevWarning';
 import {themeProps} from '../utils/themeProps';
-import {focusOutlineProps} from '../utils/focusOutline.stylex';
+import {focusOutlineStyles} from '../utils/focusOutline.stylex';
+import {
+  focusOwnerGroupProps,
+  focusOwnerProps,
+  focusWithinOwner,
+} from '../privateAttributes/focusOwner.stylex';
 import {interactionOverlayStyles} from '../utils/interactionOverlay.stylex';
 import {rowPressLayerStyles} from '../privateAttributes/press.stylex';
 import {isCoarsePointer} from '../utils/coarsePointer';
@@ -896,6 +901,7 @@ export function Item({
           {...(isDisabled
             ? {role: 'link', 'aria-disabled': true, tabIndex: 0}
             : {href, target, rel})}
+          {...focusOwnerProps}
           {...stylex.props(
             styles.invisibleAnchor,
             isInline && styles.inlineContent,
@@ -912,6 +918,7 @@ export function Item({
           {...(isDisabled
             ? disabledInteractionProps<HTMLButtonElement>()
             : null)}
+          {...focusOwnerProps}
           {...stylex.props(
             styles.invisibleButton,
             isInline && styles.inlineContent,
@@ -1034,7 +1041,12 @@ export function Item({
           selected: isSelected ? 'selected' : null,
           disabled: isDisabled ? 'disabled' : null,
         }),
-        focusOutlineProps.focusWithin(
+        // The row rings for its own primary only: its invisible button or
+        // link, or in delegation mode the nested control that is its sole tab
+        // stop. Any other control in it (a start or end slot) rings itself
+        // (`architecture:interaction-modality` INV3).
+        stylex.props(
+          isDelegate ? focusOutlineStyles.focusWithin : focusWithinOwner,
           styles.root,
           densityStyles[density],
           align === 'start' && styles.alignStart,
@@ -1078,6 +1090,9 @@ export function Item({
                 {isRenderable(marker) && marker}
                 {isRenderable(marker) && columnMarker === marker ? (
                   <span
+                    // The row's own button or link sits in this cell, so the
+                    // row's ring reaches it here.
+                    {...focusOwnerGroupProps}
                     {...stylex.props(
                       styles.markerContent,
                       align === 'first-line' && styles.markerContentFirstLine,
