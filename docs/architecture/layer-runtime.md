@@ -803,6 +803,13 @@ it on the surface inside the layer and run no layout while it plays.
 
 - `Layer/useLayer.tsx` owns Popover API lifecycle, state reconciliation,
   anchor/fixed/custom rendering, trigger source, and current same-gesture memory.
+  It also owns two internal members of a context-mode layer, which
+  `useLayerInternal` returns and `useLayer` does not. With `lazyMount`,
+  `prepare()` mounts the layer's content without showing it. The popover stays
+  closed, with no pixel and no accessibility node, and a later `show()` only
+  shows it. `releasePrepared()` unmounts that content unless the layer has
+  shown since. ContextMenu prepares its menu at a held press's commit, so its
+  first render does not fall inside the show at the hold's display moment.
 - `Layer/layerHost.ts` owns safe inline versus nearest corrective portal placement.
 - `Layer/anchorName.ts` owns composition of anchor names on one trigger.
 - `Layer/layerTextReset.stylex.ts` owns the text baseline and
@@ -853,8 +860,10 @@ it on the surface inside the layer and run no layout while it plays.
   touch-only outside listener for Tooltip/HoverCard.
 - `Layer/outsidePress.ts` owns the outside-press watch for a text field's
   manual layer, used by BaseTypeahead, DateInput, DateTimeInput and
-  ChatComposerInput's trigger menu, and the per-document count of outside
-  closes that a modal backdrop press reads (`family:overlay-dismissal` FR11).
+  ChatComposerInput's trigger menu, and for ContextMenu's menu, which judges
+  a mouse's or a pen's press as it goes down (`pressTypes`). It also owns the
+  per-document count of outside closes that a modal backdrop press reads
+  (`family:overlay-dismissal` FR11).
 - `DropdownMenuContext` and `DropdownMenuSubMenu` own the current local
   menu-cascade parent-close chain.
 - Dialog families own native modal/backdrop presentation and their local channel
