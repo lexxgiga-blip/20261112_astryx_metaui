@@ -25,7 +25,6 @@ import {
 import {KEYBOARD_SPRING} from '../motion/uikit/springs';
 import {deepActiveElement} from '../utils/flatTree';
 import {subscribeInput} from '../utils/inputStream';
-import {layoutViewportHeight} from '../utils/layoutViewport';
 import {isDocument, isNode} from '../utils/nodeType';
 import {observeResize} from '../utils/sharedResizeObserver';
 import {sharedState} from '../utils/sharedRealm';
@@ -34,6 +33,7 @@ import {
   KEYBOARD_EPSILON,
   findTextEntryControl,
   getKeyboardHeight,
+  getKeyboardViewportHeight,
   isKeyboardMeasurable,
   isTextEntryControl,
   refuseFocusReveal,
@@ -109,7 +109,7 @@ interface KeyboardGeometry {
 }
 
 function getObstructionTop(): number {
-  return layoutViewportHeight(window) - getKeyboardHeight(window);
+  return getKeyboardViewportHeight(window) - getKeyboardHeight(window);
 }
 
 // Windows whose browser revealed a focused field itself right after the
