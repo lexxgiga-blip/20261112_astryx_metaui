@@ -152,7 +152,7 @@ describe('spacing and scope', () => {
     expect(
       (
         await refusal(() =>
-          themeEditSet('t', 'spacing', 'roomy', {cwd, on: 'divider'}),
+          themeEditSet('t', 'spacing', 'roomy', {cwd, on: 'status-dot'}),
         )
       ).code,
     ).toBe('ERR_THEME_NO_EFFECT');
@@ -235,10 +235,16 @@ describe('locks', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'silent-lock-'));
       const lock = path.join(dir, 'x.lock');
       fs.mkdirSync(lock);
-      // A live holder this run cannot judge (pid 1), that never renews.
+      // A holder this run cannot judge (pid 1 in another container's
+      // process space), that never renews.
       fs.writeFileSync(
         path.join(lock, 'owner.json'),
-        JSON.stringify({pid: 1, host: os.hostname(), at: Date.now()}),
+        JSON.stringify({
+          pid: 1,
+          host: os.hostname(),
+          at: Date.now(),
+          ns: 'pid:[1]',
+        }),
       );
       const started = Date.now();
       await withFolderLock(lock, async () => undefined, {
@@ -309,6 +315,9 @@ describe('chaos round 3', () => {
     const left = path.join(cwd, 'themes/.astryx-render-999999-abcdef');
     fs.mkdirSync(left, {recursive: true});
     fs.writeFileSync(path.join(left, 'preview-t.mjs'), '');
+    // A leftover is one more than ten minutes old.
+    const old = new Date(Date.now() - 11 * 60_000);
+    fs.utimesSync(left, old, old);
     await themeEditSet('t', 'corners', 'small', {cwd});
     await themeEditUndo('t', {cwd});
     expect(fs.existsSync(left)).toBe(false);

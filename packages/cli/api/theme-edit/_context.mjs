@@ -8,6 +8,7 @@
  * @position api/theme-edit — imported only by the adapter's operation helpers
  */
 
+import {isDesktopFamily} from '../theme/build/font-warning.mjs';
 import * as fs from 'node:fs';
 import {createRequire} from 'node:module';
 import * as path from 'node:path';
@@ -15,9 +16,9 @@ import {AstryxError} from '../error.mjs';
 import {isOutsideProject} from '../../foundation/env/project-scope.mjs';
 import {
   CLOSEST_OPEN_FONT,
+  FONT_ROLES,
   OPEN_FONTS,
   P,
-  SYSTEM_FAMILIES,
   SYSTEM_FONTS,
 } from './_tables.mjs';
 import {makeCompiler} from './_compiler.mjs';
@@ -157,6 +158,8 @@ const notChecked = cause =>
 export async function pictures(project, shots, modes) {
   /** @type {string[]} */
   const files = [];
+  /** @type {string[]} */
+  const cut = [];
   for (const {html, png} of shots) {
     for (const m of modes) {
       const out =
@@ -166,9 +169,16 @@ export async function pictures(project, shots, modes) {
       const r = await screenshot(project, html, out, m);
       if (!r.ok) return {files, problem: r.reason};
       files.push(r.file);
+      if (r.cut) cut.push(r.file);
     }
   }
-  return {files, problem: null};
+  return {
+    files,
+    // A picture of the window shows the top of a longer page only.
+    problem: cut.length
+      ? `${cut.join(', ')} show${cut.length === 1 ? 's' : ''} the top 2400 pixels of the page only (Chrome takes the window, not the whole page); open the .html beside ${cut.length === 1 ? 'it' : 'them'} to see all of it, or install Playwright (${installLine(project.cwd, ['playwright'])}) for whole-page pictures`
+      : null,
+  };
 }
 
 /**
@@ -182,7 +192,8 @@ export async function pictures(project, shots, modes) {
 export function fontNotes(ctx, data) {
   /** @type {string[]} */
   const notes = [];
-  for (const {pkg, family, installed} of fontPackages(ctx, data)) {
+  const packages = fontPackages(ctx, data);
+  for (const {pkg, family, installed} of packages) {
     const fallbacks =
       Object.values(OPEN_FONTS).find(f => f.pkg === pkg)?.fallbacks ?? '';
     const near = /monospace/.test(fallbacks)
@@ -200,11 +211,10 @@ export function fontNotes(ctx, data) {
     if (
       s.thing !== 'font' ||
       SYSTEM_FONTS.includes(s.value) ||
-      SYSTEM_FAMILIES.has(
-        fontOf(s.value).family.replace(/["']/g, '').toLowerCase(),
-      ) ||
+      isDesktopFamily(fontOf(s.value).family.replace(/["']/g, '')) ||
       OPEN_FONTS[s.value] ||
       fontOf(s.value).pkg ||
+      packages.some(x => x.of === s) ||
       s.value === 'rounded' ||
       s.value === 'comic'
     )
@@ -268,7 +278,7 @@ export function styledChanges(before, after) {
   const ta = JSON.stringify(before?.typography ?? {});
   const tb = JSON.stringify(after?.typography ?? {});
   if (ta !== tb) {
-    for (const role of ['body', 'heading', 'code']) {
+    for (const role of FONT_ROLES) {
       const x = after?.typography?.[role];
       if (
         JSON.stringify(before?.typography?.[role] ?? null) !==
@@ -318,6 +328,9 @@ export async function previewAfter(ctx, slug, data, png) {
         : `checking it failed: ${e instanceof Error ? e.message : String(e)}`;
   }
   const f = themeFiles(ctx.project.cwd, slug);
+  // The sheet of every component is made by show only: after a change it
+  // says, at its top, that it shows the theme as it was.
+  const sheetStale = markSheetStale(f.sheet, slug);
   const shots =
     png && preview
       ? await pictures(
@@ -331,7 +344,40 @@ export async function previewAfter(ctx, slug, data, png) {
     pictures: shots.files,
     pictureProblem: shots.problem,
     notChecked: notChecked(cause),
+    ...(sheetStale
+      ? {
+          sheetStale: `sheet.html shows ${slug} as it was before this change; ${P} show ${slug} makes it again`,
+        }
+      : {}),
   };
+}
+
+const STALE_MARK = '<!-- astryx: sheet older than the theme -->';
+
+/**
+ * Put a notice at the top of a sheet the last change made out of date
+ * (once). Returns whether there is such a sheet.
+ * @param {string} file
+ * @param {string} slug
+ */
+function markSheetStale(file, slug) {
+  let html;
+  try {
+    html = fs.readFileSync(file, 'utf8');
+  } catch {
+    return false;
+  }
+  if (html.includes(STALE_MARK)) return true;
+  const banner = `${STALE_MARK}<div style="position:sticky;top:0;z-index:9999;padding:8px 12px;background:#fff3cd;color:#3d2c00;font:14px system-ui,sans-serif;border-bottom:1px solid #e0c870">This sheet shows ${slug} as it was before the last change. Run ${P} show ${slug} to make it again.</div>`;
+  const at = html.search(/<body[^>]*>/i);
+  const next =
+    at < 0 ? banner + html : html.replace(/<body[^>]*>/i, m => `${m}${banner}`);
+  try {
+    fs.writeFileSync(file, next);
+  } catch {
+    // Read-only: the note in the result still says so.
+  }
+  return true;
 }
 
 /**

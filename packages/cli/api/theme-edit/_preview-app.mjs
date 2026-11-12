@@ -10,7 +10,6 @@
  * @position api/theme-edit — imported only by _adapter.mjs
  */
 
-import {createHash} from 'node:crypto';
 import {parse as parseModule} from '@babel/parser';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -46,6 +45,7 @@ import {
   paletteMapping,
   tempFor,
   writeWhole,
+  refuseIfLockLost,
 } from './_palette.mjs';
 import {build} from '../build/build.mjs';
 import {search} from '../search/search.mjs';
@@ -58,6 +58,8 @@ import {detectStylingSystem} from '../../foundation/agent-docs/agent-docs.mjs';
 import {requireProject, context} from './_context.mjs';
 import {ERROR_CODES} from '../../foundation/response/error-codes.mjs';
 import {quoteCommandArgument} from '../../foundation/env/package-manager.mjs';
+import {sha256} from '../../foundation/render/source-block.mjs';
+import {findNodeModulesPackage} from '../../foundation/fs/paths.mjs';
 
 const E = ERROR_CODES;
 
@@ -524,8 +526,9 @@ function confined(file, root, what) {
       refuse(
         E.ERR_PATH_TRAVERSAL,
         link == null
-          ? `${what} ${file} is outside ${root}.`
-          : `${what} ${file}, which is a link to ${link}, outside ${root}.`,
+          ? `${what} names ${file}, which is outside ${root}.`
+          : `${what} names ${file}, which is a link to ${link}, outside ${root}.`,
+        {run: [`${PREVIEW} list`]},
       );
     }
     throw e;
@@ -925,8 +928,7 @@ function readPreview(cwd, dir, pf = '') {
 }
 
 /** A short hash of a file's text. @param {string | Buffer} text */
-const digest = text =>
-  createHash('sha256').update(text).digest('hex').slice(0, 16);
+const digest = text => sha256(Buffer.from(text)).slice(0, 16);
 
 /**
  * A file's text as a formatter could have left it: white space outside
@@ -1278,6 +1280,9 @@ function checkWrite(cwd, dir, data, w, elsewhere) {
             run: [elsewhere],
           },
     );
+  // A file another command wrote while this one was stopped is not a hand
+  // edit: say the lock was taken.
+  refuseIfLockLost();
   if (editedByHand(dir, data, w.rel))
     refuse(
       E.ERR_FILE_EXISTS,
@@ -1482,6 +1487,63 @@ function commitStep(step) {
 }
 
 /**
+ * Page files in the preview folder that theme-preview.json does not list:
+ * a stopped change can leave one behind when its step record is damaged.
+ * @param {string} dir
+ * @returns {string[]} paths relative to the preview folder
+ */
+function unrecordedPages(dir) {
+  /** @type {string[]} */
+  let listed = [];
+  try {
+    const files = JSON.parse(
+      fs.readFileSync(path.join(dir, PREVIEW_DATA), 'utf8'),
+    )?.files;
+    if (Array.isArray(files)) listed = files.map(String);
+  } catch {
+    // No record, or a damaged one: every page file is unrecorded.
+  }
+  /** @type {string[]} */
+  const out = [];
+  for (const sub of [PAGES_DIR, LEGACY_PAGES_DIR]) {
+    /** @type {string[]} */
+    let names;
+    try {
+      names = fs.readdirSync(path.join(dir, sub));
+    } catch {
+      continue;
+    }
+    for (const name of names.sort()) {
+      const rel = `${sub}/${name}`;
+      if (name.endsWith('.tsx') && !listed.includes(rel)) out.push(rel);
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether a step record names a path that leads out of the preview folder
+ * (a hand edit, a damaged file): such a record is not followed.
+ * @param {string} dir
+ * @param {any} p
+ */
+function pendingEscapes(dir, p) {
+  const rels = [
+    ...(Array.isArray(p?.temps) ? p.temps : []),
+    ...(Array.isArray(p?.record?.files) ? p.record.files : []),
+    ...(Array.isArray(p?.old?.files) ? p.old.files : []),
+  ].filter(x => typeof x === 'string');
+  return rels.some(rel => {
+    try {
+      assertWithin(path.join(dir, rel), dir, {allowAbsolute: true});
+      return false;
+    } catch {
+      return true;
+    }
+  });
+}
+
+/**
  * Finish a preview change that was stopped part way (a kill), from the
  * step record it left: its leftover temp files go; each file it was writing
  * keeps the hash of what is on disk when that is the new or the old text,
@@ -1498,13 +1560,11 @@ function recoverPreview(cwd, dir) {
   const pendingFile = path.join(dir, PENDING);
   /** @type {any} */
   let p;
-  try {
-    p = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
-  } catch (e) {
-    if (/** @type {any} */ (e)?.code === 'ENOENT') return null;
-    // Unreadable: the change is treated as never started. Its temp files
-    // are found by the names only the editor makes, when their process is
-    // gone.
+  // Unreadable, or naming a path outside the folder: the change is
+  // treated as never started.
+  const abandon = () => {
+    // Its temp files are found by the names only the editor makes, when
+    // their process is gone.
     for (const sub of ['', PAGES_DIR, LEGACY_PAGES_DIR]) {
       /** @type {string[]} */
       let names;
@@ -1520,8 +1580,18 @@ function recoverPreview(cwd, dir) {
       }
     }
     fs.rmSync(pendingFile, {force: true});
-    return `removed ${shown(cwd, pendingFile)}, a damaged step record of a preview change that was stopped`;
+    const strays = unrecordedPages(dir).map(rel =>
+      shown(cwd, path.join(dir, rel)),
+    );
+    return `removed ${shown(cwd, pendingFile)}, a damaged step record of a preview change that was stopped${strays.length ? `; ${strays.join(', ')} ${strays.length > 1 ? 'are' : 'is'} in no preview record and may be from that change, so ${strays.length > 1 ? 'they stay' : 'it stays'} until you remove ${strays.length > 1 ? 'them' : 'it'}` : ''}`;
+  };
+  try {
+    p = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
+  } catch (e) {
+    if (/** @type {any} */ (e)?.code === 'ENOENT') return null;
+    return abandon();
   }
+  if (pendingEscapes(dir, p)) return abandon();
   const inside = (/** @type {string} */ rel) =>
     confined(path.join(dir, rel), dir, PENDING);
   for (const t of Array.isArray(p?.temps) ? p.temps : [])
@@ -2296,11 +2366,7 @@ async function pageTemplates(cwd) {
  * @param {string} pkg
  */
 function installed(cwd, pkg) {
-  for (let dir = cwd; ; dir = path.dirname(dir)) {
-    if (fs.existsSync(path.join(dir, 'node_modules', pkg, 'package.json')))
-      return true;
-    if (path.dirname(dir) === dir) return false;
-  }
+  return findNodeModulesPackage(cwd, pkg) != null;
 }
 
 /**
@@ -3126,7 +3192,8 @@ export async function themeEditPreviewApp(dir, options = {}) {
       pages: data.pages.map(x => x.id),
       files,
       notes,
-      open: `cd ${quoteCommandArgument(folder)} && npm install && npm run dev, then open /theme-preview`,
+      // A folder named like a flag (`-`, `-k`) is a path to cd only with ./.
+      open: `cd ${quoteCommandArgument(folder.startsWith('-') ? `./${folder}` : folder)} && npm install && npm run dev, then open /theme-preview`,
     },
   };
 }
@@ -3151,6 +3218,29 @@ function readVersion(project, pkg) {
 }
 
 /**
+ * Why the in-app preview's record is damaged, with how to fix it, or null
+ * (no preview, or a sound one). For answers that would suggest a preview
+ * command, which the damage refuses.
+ * @param {string} cwd
+ * @returns {string | null}
+ */
+export function previewRecordProblem(cwd) {
+  try {
+    const at = previewDir(cwd, undefined, {
+      optional: true,
+      retry: () => `${PREVIEW} add`,
+    });
+    if (at) readPreview(cwd, at.dir);
+    return null;
+  } catch (e) {
+    const err = /** @type {any} */ (e);
+    if (err?.code !== E.ERR_THEME_INVALID) return null;
+    const fix = err.fix;
+    return `${String(err.message).replace(/ Nothing was changed\.$/, '')}${fix ? ` To fix it: ${fix}.` : ''}`;
+  }
+}
+
+/**
  * The pages of the in-app theme preview. With no preview, and with no
  * routes folder for one, the list is empty; a damaged theme-preview.json is
  * refused, naming the file.
@@ -3171,7 +3261,10 @@ export async function themeEditPreviewList(options = {}) {
   const data = at && readPreview(cwd, at.dir, pf);
   /** @type {string[]} */
   const notes = [];
-  if (data?.theme && !fs.existsSync(themeFiles(cwd, data.theme).dir)) {
+  const themeMissing = Boolean(
+    data?.theme && !fs.existsSync(themeFiles(cwd, data.theme).dir),
+  );
+  if (data?.theme && themeMissing) {
     const themes = editedThemes(cwd);
     notes.push(
       `the preview wears ${data.theme}, which is gone, so its route does not build; ${PREVIEW} add${pf} switches it to ${themes.length === 1 ? themes[0] : "the app's own theme"}`,
@@ -3182,6 +3275,7 @@ export async function themeEditPreviewList(options = {}) {
     data: {
       folder: at && data ? shownDir(cwd, at.dir) : null,
       theme: data?.theme ?? null,
+      themeMissing,
       pages: (data?.pages ?? []).map(x => ({id: x.id, label: x.label})),
       notes,
     },
@@ -3397,6 +3491,7 @@ async function removePreview(page, options, box) {
   // The whole preview: every entry is checked before the first delete. A
   // route changed by hand would be kept and still import the pages, so it
   // stops the remove instead.
+  refuseIfLockLost();
   if (data.files.includes('page.tsx') && editedByHand(at.dir, data, 'page.tsx'))
     refuse(
       E.ERR_FILE_EXISTS,
@@ -3471,6 +3566,17 @@ async function removePreview(page, options, box) {
       );
     }
   tidyPageFolders(at.dir);
+  // Files the record does not list stay: the preview never deletes what it
+  // has no record of writing. Each is named, so the folder left is no
+  // surprise.
+  for (const rel of unrecordedPages(at.dir)) {
+    const name = shown(cwd, path.join(at.dir, rel));
+    if (kept.includes(name)) continue;
+    kept.push(name);
+    notes.push(
+      `${name} is kept: the preview has no record of writing it, so it may hold your work`,
+    );
+  }
   try {
     fs.rmdirSync(at.dir);
     // Route group folders, such as (tools)/, that only held the preview.

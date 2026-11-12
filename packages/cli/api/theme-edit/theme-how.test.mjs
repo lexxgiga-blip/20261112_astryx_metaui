@@ -28,6 +28,7 @@ import {
   FIXTURE_PACKAGES,
   writeFixtureBaseTheme,
 } from '../../test-utils/base-theme-fixture.mjs';
+import {refusal} from '../../test-utils/theme-edit-fixture.mjs';
 
 // The page renders cost seconds and these tests read settings, builds and
 // files: a stand-in renders unless a test asks for the real thing.
@@ -49,24 +50,6 @@ beforeAll(async () => {
 afterAll(() => {
   removeLinkedFixture(cwd);
 });
-
-/**
- * The error a call throws: its code, message and suggested commands.
- * @param {() => Promise<unknown>} fn
- */
-async function refusal(fn) {
-  try {
-    await fn();
-  } catch (e) {
-    const err = /** @type {any} */ (e);
-    return {
-      code: err.code,
-      message: String(err.message),
-      run: (err.suggestions ?? []).map((/** @type {any} */ s) => s.name),
-    };
-  }
-  throw new Error('expected a refusal');
-}
 
 /** A command without the CLI prefix: `set q corners more --on button`. @param {string} c */
 const bare = c => c.replace(/^.*? experimental theme (editor )?/, '');
@@ -2205,6 +2188,573 @@ describe('how answers final-pass questions', () => {
       fs.rmSync(dir, {recursive: true, force: true});
       fs.cpSync(keep, dir, {recursive: true});
       const {data} = await themeEditHow(question, {cwd, theme: 'pf'});
+      const top = data.results.find((/** @type {any} */ r) =>
+        r.commands.some((/** @type {string} */ c) => / editor set /.test(c)),
+      );
+      const commands = top.sequence ? top.commands : [top.commands[0]];
+      const before = css();
+      for (const c of commands) {
+        const [, theme, thing, ...rest] = words(bare(c));
+        const fi = rest.findIndex(w => /^--(on|when|state|mode)$/.test(w));
+        /** @type {Record<string, string>} */
+        const flags = {};
+        for (let i = fi < 0 ? rest.length : fi; i < rest.length; i += 2)
+          flags[rest[i].slice(2)] = rest[i + 1];
+        await themeEditSet(
+          theme,
+          thing,
+          (fi < 0 ? rest : rest.slice(0, fi)).join(' '),
+          {cwd, ...flags},
+        );
+      }
+      for (const w of want) {
+        expect(before, question).not.toMatch(w);
+        expect(css(), question).toMatch(w);
+      }
+    }
+    fs.rmSync(keep, {recursive: true, force: true});
+  }, 300_000);
+});
+
+/**
+ * Final-2 questions: synonyms kept through the catalog move, named CSS
+ * properties and typed values kept whole, gray stops, fonts any machine
+ * has, part words how cannot name, and questions about the tool.
+ * @type {Array<[string, {top: RegExp | null, adds?: RegExp, text?: RegExp}]>}
+ */
+const QUESTIONS_G = [
+  // synonyms and typos
+  [
+    'the modal needs 24px padding',
+    {
+      top: /^set q padding 24px --on dialog$/,
+      adds: /dialog\.base\.padding=24px/,
+    },
+  ],
+  ['modal rounder', {top: /^set q corners more --on dialog$/}],
+  ['carrd rounder', {top: /^set q corners more --on card$/}],
+  ['divider lines #e5e7eb', {top: null}],
+  // a CSS property named in the question is set as named
+  [
+    'inputs caret-color #2563eb',
+    {
+      top: /^set q caret-color '#2563eb' --on inputs$/,
+      adds: /caretColor=#2563eb/,
+    },
+  ],
+  [
+    'card background color-mix(in srgb, #2563eb 10%, white)',
+    {
+      top: /^set q background 'color-mix\(in srgb, #2563eb 10%, white\)' --on card$/,
+    },
+  ],
+  [
+    'outline-offset 3px on buttons when focused',
+    {top: /^set q outline-offset 3px --on button --state focus-visible$/},
+  ],
+  [
+    'text-shadow 0 1px 0 rgba(0,0,0,.2) on headings',
+    {top: /^set q text-shadow '0 1px 0 rgba\(0,0,0,\.2\)' --on heading$/},
+  ],
+  [
+    'give links text-underline-offset: 4px',
+    {top: /^set q text-underline-offset 4px --on link$/},
+  ],
+  [
+    'checkbox accent-color #db2777',
+    {top: /^set q accent-color '#db2777' --on checks$/},
+  ],
+  [
+    'badges font-variant-numeric: tabular-nums',
+    {top: /^set q font-variant-numeric tabular-nums --on badge$/},
+  ],
+  [
+    'headings text-wrap balance',
+    {top: /^set q text-wrap balance --on heading$/},
+  ],
+  [
+    'button transition: background-color 150ms ease',
+    {top: /^set q transition 'background-color 150ms ease' --on button$/},
+  ],
+  // typed values kept whole
+  [
+    'card padding clamp(12px, 2vw, 24px)',
+    {
+      top: /^set q padding 'clamp\(12px, 2vw, 24px\)' --on card$/,
+      adds: /card\.base\.padding=clamp\(12px, 2vw, 24px\)/,
+    },
+  ],
+  [
+    'button min-height calc(2rem + 4px)',
+    {top: /^set q min-height 'calc\(2rem \+ 4px\)' --on button$/},
+  ],
+  [
+    'card border-radius 12px 12px 0 0',
+    {top: /^set q border-radius '12px 12px 0 0' --on card$/},
+  ],
+  [
+    'card padding-block 20px, padding-inline 16px',
+    {
+      top: /^set q padding-block 20px --on card && set q padding-inline 16px --on card$/,
+    },
+  ],
+  [
+    'headings line-height: normal',
+    {top: /^set q line-height normal --on heading$/},
+  ],
+  ['font-size: 0 on buttons', {top: null, text: /hides the text/}],
+  // a typed color is the target
+  [
+    'the danger red is too bright, use #b91c1c instead',
+    {top: /^set q danger '#b91c1c'$/},
+  ],
+  // gray stops and named grays
+  [
+    'page background gray-50',
+    {top: /^set q --color-background-body '#f[0-9a-f]{5}'$/},
+  ],
+  [
+    'text zinc-900',
+    {top: /^set q --color-text-primary '#1[0-9a-f]{5}' --mode light$/},
+  ],
+  [
+    'charcoal text instead of black',
+    {top: /^set q --color-text-primary '#333333' --mode light$/},
+  ],
+  // fonts any machine has, and typed names
+  [
+    'Plus Jakarta Sans as the main font',
+    {top: /^set q font 'Plus Jakarta Sans'$/},
+  ],
+  ['use the default Mac font', {top: /^set q font system$/}],
+  [
+    'switch the typeface to Helvetica Neue',
+    {top: /^set q font 'Helvetica Neue'$/},
+  ],
+  ['Arial everywhere', {top: /^set q font Arial$/}],
+  [
+    'Times New Roman for headings, lol',
+    {top: /^set q font 'Times New Roman' --on heading$/},
+  ],
+  ['code blocks should use Menlo', {top: /^set q font Menlo --on code$/}],
+  ['Fira Code for monospace', {top: /^set q font 'Fira Code' --on code$/}],
+  // part words: a catalog part, or say there is none
+  ['menu rounder', {top: /^set q corners more --on dropdown-menu$/}],
+  ['select rounder', {top: /^set q corners more --on selector$/}],
+  // A list shows no edge of its own (its items do): no command, and the
+  // answer names the parts inside that show one.
+  [
+    'list rounder',
+    {
+      top: null,
+      text: /list has no background, border or shadow of its own[\s\S]*item/,
+    },
+  ],
+  ['footer rounder', {top: /^set q corners more --on layout-footer$/}],
+  // a word for a component how has no part for: the closest parts
+  ['image rounder', {top: null, text: /no part is called "image"/}],
+  // "too" words, states, modes and second parts
+  [
+    'the cards are too shadowy',
+    {top: /^set q box-shadow 'var\(--shadow-low\)' --on card$/},
+  ],
+  [
+    'on focus, inputs get a 2px accent outline',
+    {
+      top: /^set q border '2px solid var\(--color-accent\)' --on inputs --state focus-within$/,
+    },
+  ],
+  [
+    'night mode page color #000000',
+    {top: /^set q --color-background-body '#000000' --mode dark$/},
+  ],
+  ['make the theme dark by default', {top: /^set q mode dark-only$/}],
+  [
+    'when hovering a card, lift it with a bigger shadow',
+    {top: /^set q box-shadow 'var\(--shadow-high\)' --on card --state hover$/},
+  ],
+  [
+    'BORDER-RADIUS: 8PX; ON: CARD',
+    {top: /^set q border-radius 8px --on card$/},
+  ],
+  [
+    'the cards and the dialogs both need 16px radius',
+    {
+      top: /^set q border-radius 16px --on card && set q border-radius 16px --on dialog$/,
+    },
+  ],
+  // questions about the tool
+  ['help', {top: null, text: /how answers a part/}],
+  ['how do I see my changes', {top: null, text: /show lists what q sets/}],
+  [
+    'difference between corners and border-radius',
+    {
+      top: null,
+      text: /corners is a dial[\s\S]*border-radius is a CSS property/,
+    },
+  ],
+];
+
+describe('how answers final-2 questions', () => {
+  for (const [question, want] of QUESTIONS_G)
+    it(question, async () => {
+      const {data} = await themeEditHow(question, {cwd, theme: 'q'});
+      /** @type {Array<{text: string, commands: string[], sequence?: boolean}>} */
+      const results = data.results ?? [];
+      const all = results.map(r => r.text).join('\n') + (data.hint ?? '');
+      if (want.text) expect(all).toMatch(want.text);
+      const changes = results.filter(r =>
+        r.commands.some(c => / editor (set|undo) /.test(c)),
+      );
+      if (want.top === null) {
+        expect(changes).toEqual([]);
+        return;
+      }
+      const top = changes[0];
+      const commands = top.sequence ? top.commands : [top.commands[0]];
+      expect(commands.map(bare).join(' && ')).toMatch(want.top);
+      if (want.adds) expect(await effect(commands)).toMatch(want.adds);
+    });
+
+  it('lists, token and dial questions get the lookup, never a change', async () => {
+    const list = (await themeEditHow('list every dial', {cwd, theme: 'q'}))
+      .data;
+    expect(list.list).toBe('dials');
+    const page = (
+      await themeEditHow('which token sets the page background?', {
+        cwd,
+        theme: 'q',
+      })
+    ).data;
+    expect(page).toMatchObject({kind: 'setting', source: 'token'});
+    expect(JSON.stringify(page)).toMatch(/--color-background-body/);
+    const explain = (await themeEditHow('explain text-size', {cwd, theme: 'q'}))
+      .data;
+    expect(explain.kind).toBe('setting');
+  });
+
+  it('the corners lookup example changes what shows', async () => {
+    const {data} = await themeEditHow('corners', {cwd, theme: 'q'});
+    const tokens = data.results.find((/** @type {any} */ r) =>
+      /whole-theme tokens/.test(r.text),
+    );
+    expect(tokens.commands.map(bare)[0]).not.toMatch(/--radius-full/);
+  });
+
+  it('reads a picture whose name has spaces, as macOS names screenshots', async () => {
+    const name = 'Screenshot 2026-11-11 at 1.23.45 PM.png';
+    const chunk = (/** @type {string} */ t, /** @type {Buffer} */ body) => {
+      const len = Buffer.alloc(4);
+      len.writeUInt32BE(body.length);
+      return Buffer.concat([
+        len,
+        Buffer.from(t, 'latin1'),
+        body,
+        Buffer.alloc(4),
+      ]);
+    };
+    const header = Buffer.alloc(13);
+    header.writeUInt32BE(1, 0);
+    header.writeUInt32BE(1, 4);
+    header[8] = 8;
+    header[9] = 2;
+    fs.writeFileSync(
+      path.join(cwd, name),
+      Buffer.concat([
+        Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+        chunk('IHDR', header),
+        chunk('IDAT', zlib.deflateSync(Buffer.from([0, 0, 0, 255]))),
+        chunk('IEND', Buffer.alloc(0)),
+      ]),
+    );
+    try {
+      for (const opts of [{words: [name]}, {}]) {
+        const shot = (await themeEditHow(name, {cwd, theme: 'q', ...opts}))
+          .data;
+        expect(shot.kind).toBe('picture');
+        expect(JSON.stringify(shot)).toMatch(/#0000ff/);
+      }
+    } finally {
+      fs.rmSync(path.join(cwd, name), {force: true});
+    }
+  });
+
+  it('runs final-2 answers through set and checks the built CSS', async () => {
+    await themeEditNew('pg', {cwd, like: 'neutral'});
+    const dir = path.join(cwd, 'themes', 'pg');
+    const keep = path.join(cwd, 'pg-pristine');
+    fs.cpSync(dir, keep, {recursive: true});
+    const css = () => fs.readFileSync(path.join(dir, 'pg.css'), 'utf8');
+    for (const [question, want] of /** @type {Array<[string, RegExp[]]>} */ ([
+      ['inputs caret-color #2563eb', [/caret-color:\s*#2563eb/]],
+      [
+        'card border-radius 12px 12px 0 0',
+        [/card[^{]*\{[^}]*border-radius:\s*12px 12px 0 0/],
+      ],
+      ['the modal needs 24px padding', [/dialog[^{]*\{[^}]*padding:\s*24px/]],
+      [
+        'the danger red is too bright, use #b91c1c instead',
+        [/--color-error:[^;]*#b91c1c/i],
+      ],
+      ['code blocks should use Menlo', [/Menlo/]],
+    ])) {
+      fs.rmSync(dir, {recursive: true, force: true});
+      fs.cpSync(keep, dir, {recursive: true});
+      const {data} = await themeEditHow(question, {cwd, theme: 'pg'});
+      const top = data.results.find((/** @type {any} */ r) =>
+        r.commands.some((/** @type {string} */ c) => / editor set /.test(c)),
+      );
+      const commands = top.sequence ? top.commands : [top.commands[0]];
+      const before = css();
+      for (const c of commands) {
+        const [, theme, thing, ...rest] = words(bare(c));
+        const fi = rest.findIndex(w => /^--(on|when|state|mode)$/.test(w));
+        /** @type {Record<string, string>} */
+        const flags = {};
+        for (let i = fi < 0 ? rest.length : fi; i < rest.length; i += 2)
+          flags[rest[i].slice(2)] = rest[i + 1];
+        await themeEditSet(
+          theme,
+          thing,
+          (fi < 0 ? rest : rest.slice(0, fi)).join(' '),
+          {cwd, ...flags},
+        );
+      }
+      for (const w of want) {
+        expect(before, question).not.toMatch(w);
+        expect(css(), question).toMatch(w);
+      }
+    }
+    fs.rmSync(keep, {recursive: true, force: true});
+  }, 300_000);
+});
+
+/**
+ * Final-3 questions: percents inside functions, typed values without a
+ * colon, ratio and direction words, resets, problem descriptions, part and
+ * state words, CSS named colors.
+ * @type {Array<[string, {top: RegExp | null, adds?: RegExp, text?: RegExp}]>}
+ */
+const QUESTIONS_H = [
+  // a percent inside a gradient or after a color is never an opacity
+  [
+    'header background linear-gradient(135deg, #2563eb 0%, #9333ea 100%)',
+    {
+      top: /^set q background 'linear-gradient\(135deg, #2563eb 0%, #9333ea 100%\)' --on app-shell-header$/,
+      adds: /app-shell-header\.base\.background=linear-gradient/,
+    },
+  ],
+  [
+    'button gradient #2563eb 0% to #9333ea 100%',
+    {
+      top: /^set q background 'linear-gradient\(#2563eb 0%, #9333ea 100%\)' --on button$/,
+    },
+  ],
+  // typed values without a colon
+  [
+    'card background linear-gradient(to right, #2563eb, #9333ea)',
+    {
+      top: /^set q background 'linear-gradient\(to right, #2563eb, #9333ea\)' --on card$/,
+    },
+  ],
+  [
+    'card opacity 0.5',
+    {top: /^set q opacity 0\.5 --on card$/, adds: /card\.base\.opacity=0\.5/},
+  ],
+  ['card border 0', {top: /^set q border 0 --on card$/}],
+  [
+    'card border color transparent',
+    {top: /^set q border-color transparent --on card$/},
+  ],
+  [
+    'card background light-dark(#fff, #111)',
+    {top: /^set q background 'light-dark\(#fff, #111\)' --on card$/},
+  ],
+  [
+    'card background var(--color-background-muted)',
+    {top: /^set q background 'var\(--color-background-muted\)' --on card$/},
+  ],
+  [
+    'card padding var(--spacing-6)',
+    {top: /^set q padding 'var\(--spacing-6\)' --on card$/},
+  ],
+  [
+    'card radius var(--radius-container)',
+    {top: /^set q border-radius 'var\(--radius-container\)' --on card$/},
+  ],
+  ['card filter: blur(2px)', {top: /^set q filter 'blur\(2px\)' --on card$/}],
+  [
+    'card backdrop-filter blur(8px)',
+    {top: /^set q backdrop-filter 'blur\(8px\)' --on card$/},
+  ],
+  [
+    'card padding NaNpx',
+    {top: null, text: /"nanpx" is not a value padding takes/},
+  ],
+  [
+    'card filter: drop-shadow(0 1px 2px #0003)',
+    {top: /^set q filter 'drop-shadow\(0 1px 2px #0003\)' --on card$/},
+  ],
+  ['card margin 16px', {top: /^set q margin 16px --on card$/}],
+  [
+    'button box-shadow: 0 0 0 2px #2563eb, 0 1px 2px #0002',
+    {
+      top: /^set q box-shadow '0 0 0 2px #2563eb, 0 1px 2px #0002' --on button$/,
+    },
+  ],
+  // ratio words and spaced units
+  ['halve the spacing', {top: /^set q spacing less$/}],
+  [
+    'cut the border radius in half on inputs',
+    {top: /^set q corners less --on inputs$/},
+  ],
+  [
+    'corners: 0.5 rem',
+    {top: /^set q corners 8px$/, adds: /--radius-element=8px/},
+  ],
+  ['card padding 1.5 em', {top: /^set q padding 1\.5em --on card$/}],
+  ['button text 14 px', {top: /^set q font-size 14px --on button$/}],
+  // direction words
+  [
+    'buttons feel heavy, lighten them up',
+    {top: /^set q font-weight 300 --on button$/},
+  ],
+  [
+    'tighten up the letter spacing on headings',
+    {top: /^set q letter-spacing -0\.02em --on heading$/},
+  ],
+  [
+    'knock the contrast of secondary text down a bit',
+    {
+      top: /^set q --color-text-secondary '#[0-9a-f]{6}' --mode light && set q --color-text-secondary '#[0-9a-f]{6}' --mode dark$/,
+      text: /less contrast/,
+    },
+  ],
+  [
+    'the gray text fails contrast, darken it',
+    {
+      top: /^set q --color-text-secondary '#323232' --mode light && set q --color-text-secondary '#bbbbbb' --mode dark$/,
+    },
+  ],
+  [
+    'the body copy is cramped, open up the leading',
+    {top: /^set q --text-body-leading [\d.]+$/},
+  ],
+  // a problem description is not a change
+  [
+    'the type hierarchy is flat, headings need more weight',
+    {top: /^set q headings bold$/},
+  ],
+  [
+    'make the buttons rounder? or maybe not. actually yes',
+    {top: /^set q corners more --on button$/},
+  ],
+  // parts and states
+  [
+    'accordion headers bold',
+    {top: /^set q font-weight 700 --on collapsible-trigger$/},
+  ],
+  ['combobox rounder', {top: /^set q corners more --on complex-selector$/}],
+  ['notification rounder', {top: /^set q corners more --on toast$/}],
+  [
+    'error toasts red',
+    {top: /^set q background '#dc2626' --on toast --when type:error$/},
+  ],
+  ['read-only inputs gray background', {top: /--on inputs --state readonly$/}],
+  [
+    'loading buttons at 70% opacity',
+    {top: null, text: /button has no loading state/},
+  ],
+  [
+    'unchecked checkboxes: thicker border',
+    {top: null, text: /checks has no unchecked state/},
+  ],
+  ['heading color red', {top: null, text: /color prop|text color/}],
+  // CSS named colors
+  ['accent tomato', {top: /^set q accent '#ff6347'$/}],
+  // a font size of 0
+  ['font size 0px', {top: null, text: /hides the text/}],
+];
+
+describe('how answers final-3 questions', () => {
+  for (const [question, want] of QUESTIONS_H)
+    it(question, async () => {
+      const {data} = await themeEditHow(question, {cwd, theme: 'q'});
+      /** @type {Array<{text: string, commands: string[], sequence?: boolean}>} */
+      const results = data.results ?? [];
+      const all = results.map(r => r.text).join('\n') + (data.hint ?? '');
+      if (want.text) expect(all).toMatch(want.text);
+      const changes = results.filter(r =>
+        r.commands.some(c => / editor (set|undo) /.test(c)),
+      );
+      if (want.top === null) {
+        expect(changes).toEqual([]);
+        return;
+      }
+      const top = changes[0];
+      const commands = top.sequence ? top.commands : [top.commands[0]];
+      expect(commands.map(bare).join(' && ')).toMatch(want.top);
+      if (want.adds) expect(await effect(commands)).toMatch(want.adds);
+    });
+
+  it('reset, revert and back to default take back what the theme sets, or say it sets nothing', async () => {
+    await themeEditNew('rs', {cwd, like: 'neutral'});
+    await themeEditSet('rs', 'corners', 'pill', {cwd});
+    await themeEditSet('rs', 'accent', '#e11d48', {cwd});
+    await themeEditSet('rs', 'font', 'georgia', {cwd});
+    await themeEditSet('rs', 'background', '#fafafa', {cwd, on: 'card'});
+    for (const [q, want] of /** @type {Array<[string, string]>} */ ([
+      ['reset the corners to default', 'undo rs corners'],
+      ['put the accent back to what it was', 'undo rs accent'],
+      ['revert the font', 'undo rs font'],
+      ['clear the card background override', 'undo rs background --on card'],
+    ])) {
+      const {data} = await themeEditHow(q, {cwd, theme: 'rs'});
+      expect(data.results[0].commands.map(bare)[0], q).toBe(want);
+    }
+    const none = (
+      await themeEditHow('no custom spacing, use the standard scale', {
+        cwd,
+        theme: 'rs',
+      })
+    ).data;
+    expect(none.results[0].text).toMatch(/sets nothing for spacing/);
+  }, 120_000);
+
+  it('a part word with no part lists the parts of components that name it', async () => {
+    const list = (await themeEditHow('accordion', {cwd, list: 'parts'})).data;
+    expect(list.items.map((/** @type {any} */ x) => x.name)).toContain(
+      'collapsible',
+    );
+  });
+
+  it('runs final-3 answers through set and checks the built CSS', async () => {
+    await themeEditNew('ph', {cwd, like: 'neutral'});
+    const dir = path.join(cwd, 'themes', 'ph');
+    const keep = path.join(cwd, 'ph-pristine');
+    fs.cpSync(dir, keep, {recursive: true});
+    const css = () => fs.readFileSync(path.join(dir, 'ph.css'), 'utf8');
+    for (const [question, want] of /** @type {Array<[string, RegExp[]]>} */ ([
+      [
+        'header background linear-gradient(135deg, #2563eb 0%, #9333ea 100%)',
+        [
+          /app-shell-header[^{]*\{[^}]*background:\s*linear-gradient\(135deg, #2563eb 0%, #9333ea 100%\)/,
+        ],
+      ],
+      ['card opacity 0.5', [/card[^{]*\{[^}]*opacity:\s*0\.5/]],
+      [
+        'card filter: drop-shadow(0 1px 2px #0003)',
+        [/filter:\s*drop-shadow\(0 1px 2px #0003\)/],
+      ],
+      ['card margin 16px', [/card[^{]*\{[^}]*margin:\s*16px/]],
+      [
+        'error toasts red',
+        [/toast[^{]*error[^{]*\{[^}]*background(-color)?:\s*#dc2626/],
+      ],
+    ])) {
+      fs.rmSync(dir, {recursive: true, force: true});
+      fs.cpSync(keep, dir, {recursive: true});
+      const {data} = await themeEditHow(question, {cwd, theme: 'ph'});
       const top = data.results.find((/** @type {any} */ r) =>
         r.commands.some((/** @type {string} */ c) => / editor set /.test(c)),
       );

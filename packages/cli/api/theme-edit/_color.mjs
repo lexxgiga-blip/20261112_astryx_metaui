@@ -8,6 +8,8 @@
  * @position api/theme-edit — pure helpers
  */
 
+import {CSS_WIDE_KEYWORDS} from '../theme/build/font-warning.mjs';
+import {matchType} from './_css.mjs';
 import {luminance, oklabToLinearRgb} from '../theme/palette/generate/color.mjs';
 
 /** @typedef {[number, number, number]} Rgb */
@@ -168,14 +170,7 @@ const NAMED = /** @type {Record<string, string>} */ ({
 export const COLOR_NAMES = Object.keys(NAMED);
 
 /** Color keywords that are valid colors but have no fixed value. */
-const KEYWORDS = [
-  'transparent',
-  'currentcolor',
-  'inherit',
-  'initial',
-  'unset',
-  'revert',
-];
+const KEYWORDS = ['transparent', 'currentcolor', ...CSS_WIDE_KEYWORDS];
 
 /** CSS system colors: valid, but they follow the user's device. */
 const SYSTEM = [
@@ -607,6 +602,7 @@ export function ratio(a, b) {
  * numbers must be well formed; one with `var()`, `calc()`, `env()` or a
  * relative color is taken as written.
  * @param {unknown} v
+ * @returns {boolean}
  */
 export const isColorValue = v => {
   const s = String(v).trim();
@@ -624,6 +620,9 @@ export const isColorValue = v => {
     /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(s) ||
     FUNCTIONS.test(s) ||
     /^var\(--[a-z0-9-]+\)$/i.test(s) ||
+    // A variable with a color to fall back to.
+    (/^var\(--[a-z0-9-]+\s*,\s*(.+)\)$/i.test(s) &&
+      isColorValue(/^var\(--[a-z0-9-]+\s*,\s*(.+)\)$/i.exec(s)?.[1] ?? '')) ||
     Object.hasOwn(NAMED, s.toLowerCase()) ||
     KEYWORDS.includes(s.toLowerCase()) ||
     SYSTEM.includes(s.toLowerCase())
@@ -650,13 +649,16 @@ export const isSize = (v, name = '') => {
     );
   if (/^var\(--[a-z0-9-]+\)$/i.test(s)) return true;
   if (/^env\([a-z-]+(,.*)?\)$/i.test(s)) return true;
-  return /^(calc|min|max|clamp)\(.*(\d|var\().*\)$/i.test(s);
+  return (
+    /^(calc|min|max|clamp)\(/i.test(s) &&
+    matchType('length-percentage', s) != null
+  );
 };
 
 /**
  * Whether a value reads as a CSS number for the token: a weight is 1 to
- * 1000 or a weight keyword; a line height is a positive number, length or
- * percentage, or `normal`.
+ * 1000 or a weight keyword; a line height is a number, length or
+ * percentage of 0 or more, or `normal`.
  * @param {unknown} v
  * @param {string} [name]
  */
@@ -671,8 +673,9 @@ export const isNumber = (v, name = '') => {
   if (/leading|line-height/.test(name))
     return (
       s === 'normal' ||
-      (/^\d*\.?\d+(px|rem|em|%)?$/.test(s) && Number.parseFloat(s) > 0) ||
-      /^calc\(.*\d.*\)$/.test(s)
+      (/^\d*\.?\d+(px|rem|em|%)?$/.test(s) && Number.parseFloat(s) >= 0) ||
+      (/^calc\(/i.test(s) && matchType('length-percentage', s) != null) ||
+      (/^calc\(/i.test(s) && matchType('number', s) != null)
     );
   return /^-?\d*\.?\d+$/.test(s);
 };

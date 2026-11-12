@@ -9,17 +9,30 @@
  * @position api/theme-edit — checks over the part data
  */
 
-import {createRequire} from 'node:module';
+import * as fs from 'node:fs';
 import {ERROR_CODES} from '../../foundation/response/error-codes.mjs';
+import {baseThemeFile} from './_project.mjs';
 import {levenshteinDistance} from '../../foundation/text/levenshtein.mjs';
-import {CSS_PROPERTIES} from './_css-properties.mjs';
+import {
+  belowRange,
+  cssProperties,
+  grammarText,
+  initialOf,
+  keywordsOf,
+  matchType,
+  matchValue,
+  numbersIn,
+  propertyGrammar,
+} from './_css.mjs';
 import {
   AUTO_SPREAD,
+  COLOR_PROP_PARTS,
   COLOR_PROPS,
   COMMON_STATES,
   CORNERS,
   DIALS,
   FAMILIES,
+  FONT_ROLES,
   FONTS,
   GROUPS,
   HEADING_TRACKING,
@@ -60,6 +73,9 @@ import {
   refuse,
   lengthPx,
   radiusAt,
+  radiusTokenOf,
+  focusStateOf,
+  valueProblem,
 } from './_settings.mjs';
 import {quoteCommandArgument} from '../../foundation/env/package-manager.mjs';
 
@@ -80,6 +96,17 @@ function tokenPx(base, token) {
   }
   return lengthPx(v);
 }
+
+/**
+ * A `set` (or `undo`) command for a setting, with its scope, to suggest.
+ * @param {string} slug
+ * @param {string} thing
+ * @param {string} value
+ * @param {{on?: string, when?: string, state?: string, mode?: string, only?: boolean}} s
+ * @param {boolean} [unset]
+ */
+const setLine = (slug, thing, value, s, unset = false) =>
+  `${P} ${unset ? 'undo' : 'set'} ${slug} ${thing}${value ? ` ${quoteCommandArgument(value)}` : ''}${s.on ? ` --on ${s.on}` : ''}${s.when ? ` --when ${s.when}` : ''}${s.state ? ` --state ${s.state}` : ''}${s.mode ? ` --mode ${s.mode}` : ''}${s.only ? ' --only' : ''}`;
 
 /** @param {string} v */
 const cornerPxOf = v =>
@@ -182,7 +209,12 @@ export function storedProblems(ctx, slug, data, skip = '') {
     const scope = why => ({setting: s, why, scope: true});
     const problem = (() => {
       const t = s.on ? ctx.project.target.get(s.on) : null;
-      if (s.on && !t && !FAMILIES[s.on])
+      if (
+        s.on &&
+        !t &&
+        !FAMILIES[s.on] &&
+        !(s.thing === 'font' && FONT_ROLES.includes(s.on))
+      )
         return scope(`there is no part or group "${s.on}"`);
       if (s.source === 'dial' && s.on && WHOLE_ONLY.includes(s.thing))
         return scope(`${s.thing} applies to the whole theme, not to ${s.on}`);
@@ -312,9 +344,7 @@ function checkTypedValue(type, value, name, TOKENS, typeOf, slug) {
     bad('a shadow', '0 2px 4px rgb(0 0 0 / 0.2)');
   if (
     /^--focus-outline-style$/.test(name) &&
-    !/^(none|solid|dashed|dotted|double|groove|ridge|inset|outset|auto)$/.test(
-      value.trim(),
-    )
+    !matchValue('outline-style', value.trim())
   )
     bad('an outline style', 'solid');
 }
@@ -384,115 +414,50 @@ const SYSTEM_COLORS = [
 ];
 
 /**
- * Whether a value is a time the browser takes, at most a minute.
+ * Whether a value is a time the browser takes, at most a minute and never
+ * negative (the grammar has no range).
  * @param {string} value
  */
 function isTime(value) {
-  const v = value.trim().toLowerCase();
-  if (/^(calc|min|max|clamp)\(/.test(v)) return true;
-  const m = /^\+?(\d*\.?\d+(?:e[+-]?\d+)?)(ms|s)$/.exec(v);
-  if (!m) return false;
-  const ms = Number(m[1]) * (m[2] === 's' ? 1000 : 1);
-  return ms <= 60_000;
+  const ast = matchType('time', value.trim());
+  return (
+    ast != null &&
+    numbersIn(ast).every(
+      n =>
+        !['s', 'ms'].includes(n.unit) ||
+        (n.value >= 0 && n.value * (n.unit === 's' ? 1000 : 1) <= 60_000),
+    )
+  );
 }
 
 /**
- * Whether a value is an easing the browser takes: a keyword, a cubic-bezier
- * with four numbers (x1 and x2 from 0 to 1), steps(n), or linear() with two
- * stops or more.
+ * Whether a value is an easing the browser takes. The grammar has no range
+ * for a step count: steps() needs at least one step, and two with
+ * `jump-none`.
  * @param {string} value
  */
 function isEasing(value) {
-  const v = value.trim().toLowerCase();
-  if (
-    /^(linear|ease|ease-in|ease-out|ease-in-out|step-start|step-end)$/.test(v)
-  )
-    return true;
-  const m = /^(cubic-bezier|steps|linear)\((.*)\)$/.exec(v);
-  if (!m) return false;
-  const args = splitTop(m[2], ',').map(x => x.trim());
-  if (args.some(a => /var\(/.test(a))) return true;
-  const num = (/** @type {string} */ a) => /^[+-]?\d*\.?\d+$/.test(a);
-  if (m[1] === 'cubic-bezier')
-    return (
-      args.length === 4 &&
-      args.every(num) &&
-      [0, 2].every(i => Number(args[i]) >= 0 && Number(args[i]) <= 1)
-    );
-  if (m[1] === 'steps')
-    return (
-      /^\d+$/.test(args[0] ?? '') &&
-      Number(args[0]) >= 1 &&
-      args.length <= 2 &&
-      (args.length === 1 ||
-        /^(jump-start|jump-end|jump-none|jump-both|start|end)$/.test(
-          args[1],
-        )) &&
-      !(args[1] === 'jump-none' && Number(args[0]) < 2)
-    );
-  return args.length >= 2 && args.every(a => /^[+-]?\d*\.?\d+(\s|$)/.test(a));
+  const ast = matchType('easing-function', value.trim());
+  if (!ast) return false;
+  const count = numbersIn(ast).find(n => n.fn === 'steps');
+  return !count || count.value >= (/jump-none/i.test(value) ? 2 : 1);
 }
 
-/**
- * Whether a value is a font family list: each family a quoted name, a name
- * of words that do not start with a digit, or a var().
- * @param {string} value
- */
-function isFamilyList(value) {
-  return splitTop(value.trim(), ',').every(f => {
-    const t = f.trim();
-    return (
-      /^"[^"]+"$/.test(t) ||
-      /^'[^']+'$/.test(t) ||
-      /^var\(/i.test(t) ||
-      /^[\p{L}_-][\p{L}\p{N}_-]*(\s+[\p{L}_-][\p{L}\p{N}_-]*)*$/u.test(t)
-    );
-  });
-}
+/** Whether a value is a font family list. @param {string} value */
+const isFamilyList = value => matchValue('font-family', value.trim()) != null;
 
 /**
- * Whether a value is a shadow list: each layer is `inset`, two to four
- * lengths, and a color, in any order; or `none`.
+ * Whether a value is a shadow list. The grammar has no range for the blur
+ * (the third length), which is never negative.
  * @param {string} value
  */
 function isShadow(value) {
-  const v = value.trim();
-  if (v === 'none') return true;
-  const layers = splitTop(v, ',');
-  // light-dark() takes colors: a whole shadow per mode inside it is dropped.
-  if (
-    layers.length === 1 &&
-    splitTop(v, ' ').length === 1 &&
-    !/^var\(/i.test(v)
-  )
-    return false;
-  return layers.every(layer => {
-    const words = splitTop(layer.trim(), ' ');
-    // One var() stacks a shadow token in the list.
-    if (words.length === 1 && /^var\(/i.test(words[0])) return true;
-    const insets = words.filter(w => w.toLowerCase() === 'inset').length;
-    const nums = words.filter(w =>
-      /^[+-]?\d*\.?\d+(px|rem|em|pt|pc|cm|mm|in|vw|vh|vmin|vmax|ch|ex|lh)?$|^(calc|min|max|clamp)\(/i.test(
-        w,
-      ),
+  if (!matchValue('box-shadow', value.trim())) return false;
+  return splitTop(value.trim(), ',').every(layer => {
+    const lengths = splitTop(layer.trim(), ' ').filter(w =>
+      /^[+-]?\d*\.?\d+[a-z]*$/i.test(w),
     );
-    const vars = words.filter(w => /^var\(/i.test(w));
-    const rest = words.filter(
-      w =>
-        !nums.includes(w) && !vars.includes(w) && w.toLowerCase() !== 'inset',
-    );
-    // A blur (the third length) is never negative.
-    if (nums.length >= 3 && nums[2].startsWith('-')) return false;
-    // A var() fills a length or the color, whichever is missing.
-    const color = rest.length ? 0 : Math.min(1, vars.length);
-    const lengths = nums.length + vars.length - color;
-    return (
-      insets <= 1 &&
-      lengths >= 2 &&
-      lengths <= 4 &&
-      rest.length <= 1 &&
-      rest.every(w => isFixedColor(w))
-    );
+    return !(lengths[2] ?? '').startsWith('-');
   });
 }
 
@@ -564,98 +529,6 @@ function checkCycle(thing, value, TOKENS, data) {
     );
 }
 
-const require = createRequire(import.meta.url);
-/** @type {any} */
-let tree = null;
-/** css-tree, loaded on first use. */
-const csstree = () => (tree ??= require('css-tree'));
-
-/** What a var() or env() may stand for while the rest of a value is matched. */
-const VAR_STANDS_FOR = ['0', '1px', '1ms', 'red', 'ease', 'serif', '0 0 red'];
-
-/**
- * Whether a value matches a property's grammar as css-tree reads it (the
- * browser's grammar, from MDN's data). A var() or env() can hold anything,
- * so the value matches when some ordinary value in its place does.
- * @param {string} prop
- * @param {string} value
- */
-function matchesProperty(prop, value) {
-  const {lexer, parse} = csstree();
-  const vars =
-    value.match(/(?:var|env)\([^()]*(?:\([^()]*\)[^()]*)*\)/gi) ?? [];
-  /** @param {string} v */
-  const tryOne = v => {
-    try {
-      return !lexer.matchProperty(prop, parse(v, {context: 'value'})).error;
-    } catch {
-      return false;
-    }
-  };
-  if (vars.length > 3) return false;
-  /** @param {string} v @param {number} i @returns {boolean} */
-  const fill = (v, i) =>
-    i === vars.length
-      ? tryOne(v)
-      : VAR_STANDS_FOR.some(stand => fill(v.replace(vars[i], stand), i + 1));
-  return fill(value, 0);
-}
-
-/**
- * The keywords a property's grammar takes, through the types it names.
- * @param {string} prop
- * @returns {string[]}
- */
-function keywordsOf(prop) {
-  const t = csstree();
-  const seen = new Set();
-  /** @type {Set<string>} */
-  const words = new Set();
-  /** @param {any} syntax */
-  const walk = syntax => {
-    if (!syntax) return;
-    t.definitionSyntax.walk(syntax, (/** @type {any} */ n) => {
-      if (n.type === 'Keyword') {
-        if (!n.name.startsWith('-')) words.add(n.name);
-      } else if (n.type === 'Type' && !seen.has(n.name)) {
-        seen.add(n.name);
-        walk(t.lexer.types[n.name]?.syntax);
-      }
-    });
-  };
-  walk(t.lexer.properties[prop]?.syntax);
-  return [...words];
-}
-
-/**
- * A value the property takes, to put in a suggestion: its initial value
- * from MDN's data (a shorthand's first longhand's).
- * @param {string} prop
- * @returns {string | null}
- */
-function initialOf(prop) {
-  const mdn = /** @type {Record<string, {initial?: string | string[]}>} */ (
-    createRequire(require.resolve('css-tree/package.json'))(
-      'mdn-data/css/properties.json',
-    )
-  );
-  const initial = mdn[prop]?.initial;
-  if (Array.isArray(initial)) return initial[0] ? initialOf(initial[0]) : null;
-  return typeof initial === 'string' && matchesProperty(prop, initial)
-    ? initial
-    : null;
-}
-
-/**
- * A property's grammar as text, cut at a whole term when it is long.
- * @param {any} syntax
- */
-function grammarText(syntax) {
-  const text = csstree().definitionSyntax.generate(syntax);
-  if (text.length <= 120) return text;
-  return `${text.slice(0, 120).replace(/\s*\|[^|]*$/, '')} | …`;
-}
-
 /**
  * Why a value is not one the property takes, or null. Colors are checked
  * by the editor's own color check; a property css-tree has no grammar for
@@ -666,13 +539,17 @@ function grammarText(syntax) {
  */
 function propertyProblem(prop, value) {
   const v = value.trim();
-  const known = csstree().lexer.properties[prop];
-  if (!known || COLOR_PROPS.test(prop) || matchesProperty(prop, v)) return null;
+  const known = propertyGrammar(prop);
+  if (!known || COLOR_PROPS.test(prop)) return null;
+  if (matchValue(prop, v))
+    return belowRange(prop, v)
+      ? {takes: 'a value of 0 or more', near: null}
+      : null;
   const near = /^[a-z-]+$/i.test(v)
     ? (nearest(v.toLowerCase(), keywordsOf(prop))[0] ?? null)
     : null;
   return {
-    takes: `a value its CSS grammar takes (${grammarText(known.syntax)})`,
+    takes: `a value its CSS grammar takes (${grammarText(known)})`,
     near: near ?? initialOf(prop),
   };
 }
@@ -721,7 +598,27 @@ const DIAL_WORDS = /** @type {Record<string, Record<string, string>>} */ ({
 });
 
 /**
- * Check one setting and give it back ready to store, or refuse.
+/**
+ * Whether the base theme's own part styles read a token (`var(--x)`), which
+ * the editor's record of Core's parts does not cover.
+ * @param {import('./_settings.mjs').Ctx} ctx
+ * @param {string} like
+ * @param {string} token
+ */
+function baseReads(ctx, like, token) {
+  try {
+    return new RegExp(`var\\(${token}[,)]`).test(
+      fs.readFileSync(baseThemeFile(ctx.project, like), 'utf8'),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check one setting and give it back ready to store, or refuse. What it
+ * accepts, the settings loader takes too: the loader's own check runs last,
+ * so a saved setting never blocks the theme.
  * @param {import('./_settings.mjs').Ctx} ctx
  * @param {string} slug
  * @param {import('./_settings.mjs').ThemeData} data
@@ -740,6 +637,37 @@ export function checkSetting(
   flags,
   unset = false,
 ) {
+  const s = checkOne(ctx, slug, data, thing, value, flags, unset);
+  const why = unset ? null : valueProblem(s);
+  if (why)
+    refuse(
+      E.ERR_THEME_BAD_VALUE,
+      /cannot be a CSS value$/.test(why)
+        ? `${why}: it has a ; { } < > or a newline, a comment, !important, or an unclosed bracket or quote, so the browser would drop it.`
+        : `${why}.`,
+      {
+        run: [
+          s.thing === 'font'
+            ? `${P} set ${slug} font inter${s.on ? ` --on ${s.on}` : ''}`
+            : `${HOW} ${s.thing}`,
+        ],
+      },
+    );
+  return s;
+}
+
+/**
+ * The checks of one setting, before the loader's (see checkSetting).
+ * @param {import('./_settings.mjs').Ctx} ctx
+ * @param {string} slug
+ * @param {import('./_settings.mjs').ThemeData} data
+ * @param {string} thing
+ * @param {string | undefined} value
+ * @param {SetFlags} flags
+ * @param {boolean} unset
+ * @returns {import('./_settings.mjs').Setting}
+ */
+function checkOne(ctx, slug, data, thing, value, flags, unset) {
   const {C} = ctx;
   const TARGET = ctx.project.target;
   const TOKENS = ctx.project.core.tokenDefaults;
@@ -775,11 +703,24 @@ export function checkSetting(
   const v = (value ?? '').replace(/\s*[\r\n]+\s*/g, ' ').trim();
   // A var() that misspells a design token would read nothing.
   if (!unset)
-    for (const [, name] of v.matchAll(/var\(\s*(--[a-z0-9-]+)/gi)) {
+    for (const [, name, comma] of v.matchAll(
+      /var\(\s*(--[a-z0-9-]+)\s*(,)?/gi,
+    )) {
       if (name in TOKENS || name.startsWith('--_')) continue;
       const near = nearest(name, Object.keys(TOKENS)).filter(
         n => levenshteinDistance(n, name) <= 2,
       );
+      // Without a fallback, a variable no design token names reads
+      // nothing; var(--x, <value>) falls back to the value.
+      if (!near.length && !comma && !DIALS[thing])
+        refuse(
+          E.ERR_THEME_UNKNOWN_TOKEN,
+          `${name} is not a design token, so var(${name}) would read nothing. Give a fallback (var(${name}, <value>)) for a variable your app sets, or use a design token.`,
+          {
+            didYouMean: nearest(name, Object.keys(TOKENS)).slice(0, 3),
+            run: [`${HOW} --list tokens`],
+          },
+        );
       if (near.length)
         refuse(
           E.ERR_THEME_UNKNOWN_TOKEN,
@@ -821,7 +762,12 @@ export function checkSetting(
       refuse(
         E.ERR_THEME_BAD_VALUE,
         `--mode takes light or dark, not "${flags.mode}".`,
-        {didYouMean: nearest(mode, ['light', 'dark'])},
+        {
+          didYouMean: nearest(mode, ['light', 'dark']),
+          // The same setting for both modes runs as printed; the mode it
+          // probably meant is the did-you-mean.
+          run: [setLine(slug, thing, v, {...s, mode: undefined}, unset)],
+        },
       );
     s.mode = mode;
   }
@@ -858,8 +804,7 @@ export function checkSetting(
         },
       );
   }
-  const isRole =
-    thing === 'font' && ['body', 'heading', 'code'].includes(s.on ?? '');
+  const isRole = thing === 'font' && FONT_ROLES.includes(s.on ?? '');
   if (s.on && !isRole && !FAMILIES[s.on]) {
     const t = TARGET.get(s.on);
     if (!t) {
@@ -919,7 +864,36 @@ export function checkSetting(
       refuse(
         E.ERR_THEME_UNKNOWN_STATE,
         `"${s.state}" is not a state of ${s.on}. States: ${states.join(', ')}.`,
-        {didYouMean: nearest(s.state, states)},
+        {
+          didYouMean: nearest(s.state, states),
+          run: [
+            setLine(
+              slug,
+              thing,
+              v,
+              {...s, state: nearest(s.state, states)[0] ?? 'hover'},
+              unset,
+            ),
+          ],
+        },
+      );
+  }
+  // A part whose styled element is a wrapper (a text input's box) shows
+  // focus only through focus-within: focus or focus-visible there would
+  // never apply. Named the way `how` names it.
+  if (!unset && s.on && (s.state === 'focus' || s.state === 'focus-visible')) {
+    const parts = partsOf(ctx, s).filter(t => focusStateOf(ctx, t));
+    if (
+      parts.length &&
+      parts.every(t => focusStateOf(ctx, t) === 'focus-within')
+    )
+      refuse(
+        E.ERR_THEME_NO_EFFECT,
+        `${s.on} shows focus on its box, around the field itself, so ${s.state} never applies there; focus-within does (the box while the field inside has focus).`,
+        {
+          didYouMean: ['focus-within'],
+          run: [setLine(slug, thing, v, {...s, state: 'focus-within'}, unset)],
+        },
       );
   }
   // On a group, a variant or state must belong to at least one member.
@@ -1042,6 +1016,17 @@ export function checkSetting(
               ...Object.keys(HEADING_WEIGHTS),
               ...Object.keys(HEADING_TRACKING),
             ]),
+            run: [
+              setLine(
+                slug,
+                'headings',
+                nearest(v, [
+                  ...Object.keys(HEADING_WEIGHTS),
+                  ...Object.keys(HEADING_TRACKING),
+                ])[0] ?? Object.keys(HEADING_WEIGHTS)[0],
+                s,
+              ),
+            ],
           },
         );
       return s;
@@ -1052,7 +1037,7 @@ export function checkSetting(
       // The value in effect for the target: its own setting, else the
       // whole-theme one, else the starting point.
       // Same target: the part, and the same variant and state.
-      const own = (/** @type {string} */ on) =>
+      const latest = (/** @type {string} */ on) =>
         [...data.settings].reverse().find(
           x =>
             x.thing === thing &&
@@ -1062,12 +1047,21 @@ export function checkSetting(
             // A member set alone (--only) is not the member as the group
             // spreads it.
             Boolean(x.only) === (on === s.on ? Boolean(s.only) : false),
-        )?.value;
-      // A member of a group set on the group steps from the group's value.
+        );
+      const own = (/** @type {string} */ on) => latest(on)?.value;
+      // A member covered by a later group setting shows the group's value
+      // (the later one wins, as the build applies them).
       const fam = s.on ? familyOf(s.on) : null;
+      const mine = latest(s.on ?? '');
+      const group = fam && fam !== s.on && !s.only ? latest(fam) : undefined;
+      const shown =
+        mine && group
+          ? data.settings.indexOf(group) > data.settings.indexOf(mine)
+            ? group
+            : mine
+          : (mine ?? group);
       const cur =
-        own(s.on ?? '') ??
-        (fam && fam !== s.on && !s.only ? own(fam) : undefined) ??
+        shown?.value ??
         // A part's own radius (a number) already counts a whole-theme
         // setting.
         (s.on && typeof def !== 'number' ? own('') : undefined) ??
@@ -1078,13 +1072,36 @@ export function checkSetting(
           Math.max(0, Math.min(L.length - 1, at + (v === 'more' ? 1 : -1)))
         ][0];
       // A size between rungs steps to the next rung that way, never past it.
-      const px = typeof cur === 'number' ? cur : (lengthPx(cur) ?? Number.NaN);
+      const px =
+        typeof cur === 'number'
+          ? cur
+          : (lengthPx(cur) ??
+            (/^\d*\.?\d+$/.test(String(cur)) ? Number(cur) : Number.NaN));
       if (Number.isNaN(px)) return L[0][0];
       const next =
         v === 'more'
           ? L.find(([, n]) => n > px + 0.01)
           : [...L].reverse().find(([, n]) => n < px - 0.01);
-      return (next ?? (v === 'more' ? L[L.length - 1] : L[0]))[0];
+      // Past the last step that way, a step would go back: give a size.
+      if (!next) {
+        const edge = /** @type {[string, number]} */ (
+          v === 'more' ? L[L.length - 1] : L[0]
+        );
+        const example = String(cur).replace(
+          /\d*\.?\d+/,
+          String(Math.max(0, Math.round(px + (v === 'more' ? 2 : -2)))),
+        );
+        refuse(
+          E.ERR_THEME_BAD_VALUE,
+          `${thing} is ${typeof cur === 'number' ? `${cur}px` : cur}, already ${v === 'more' ? 'above' : 'below'} its ${v === 'more' ? 'largest' : 'smallest'} step (${edge[0]}, ${edge[1]}px), so "${v}" has nowhere to go. Give an exact size.`,
+          {
+            run: [
+              `${P} set ${slug} ${thing} ${quoteCommandArgument(example)}${s.on ? ` --on ${s.on}` : ''}`,
+            ],
+          },
+        );
+      }
+      return next[0];
     };
     if (PALETTE_DIALS.includes(thing) && (s.on || s.mode)) {
       const token = paletteToken(thing);
@@ -1143,30 +1160,37 @@ export function checkSetting(
           light: /** @type {Record<string, string>} */ ({}),
           dark: /** @type {Record<string, string>} */ ({}),
         };
-        const token =
-          (s.on
-            ? /^var\((--radius-[\w-]+)\)$/.exec(
-                partDefault(
-                  ctx,
-                  partsOf(ctx, s)[0] ?? s.on,
-                  'borderRadius',
-                  s.when,
-                ) ?? '',
-              )?.[1]
-            : null) ?? '--radius-element';
+        const token = s.on
+          ? radiusTokenOf(ctx, partsOf(ctx, s)[0] ?? s.on, s.when)
+          : '--radius-element';
         // What the part shows: a setting on it or on its group (the later
         // one wins), else a whole-theme setting, else the base theme.
         const fam = s.on ? familyOf(s.on) : null;
+        // A setting reaches the part when it is on the part itself, on its
+        // group, or spread from a member (pill on text-input reaches the
+        // whole inputs group). One for the same variant and state wins,
+        // else the part's plain one (it applies there too).
+        const part = partsOf(ctx, s)[0] ?? s.on;
+        const reaches = (/** @type {import('./_settings.mjs').Setting} */ x) =>
+          x.thing === 'corners' &&
+          x.on &&
+          (x.on === s.on ||
+            (fam && fam !== s.on && x.on === fam && !x.only) ||
+            (!x.only && partsOf(ctx, x).includes(part)));
         const onPart = s.on
-          ? [...data.settings].reverse().find(
-              x =>
-                x.thing === 'corners' &&
-                (x.when ?? '') === (s.when ?? '') &&
-                (x.state ?? '') === (s.state ?? '') &&
-                // A member set alone shows that value too.
-                (x.on === s.on ||
-                  (fam && fam !== s.on && x.on === fam && !x.only)),
-            )
+          ? ([...data.settings]
+              .reverse()
+              .find(
+                x =>
+                  reaches(x) &&
+                  (x.when ?? '') === (s.when ?? '') &&
+                  (x.state ?? '') === (s.state ?? ''),
+              ) ??
+            (s.when || s.state
+              ? [...data.settings]
+                  .reverse()
+                  .find(x => reaches(x) && !x.when && !x.state)
+              : undefined))
           : undefined;
         // A step on a member set alone stays on that member alone.
         if (onPart && onPart.on === s.on && onPart.only && !s.only)
@@ -1210,9 +1234,12 @@ export function checkSetting(
           // What it most likely means, as a value corners takes.
           const len = lengthPx(lower);
           const pct = /^(\d+(?:\.\d+)?)%$/.exec(lower);
+          // A radius below zero means none: square.
           const meant =
             len != null
-              ? `${len}px`
+              ? len <= 0
+                ? 'square'
+                : `${Math.round(len * 100) / 100}px`
               : pct
                 ? Number(pct[1]) >= 50
                   ? 'pill'
@@ -1226,9 +1253,8 @@ export function checkSetting(
             `corners takes ${DIALS.corners.values}, not "${v}".`,
             {
               ...(meant ? {didYouMean: [meant]} : {}),
-              run: [
-                `${P} set ${slug} corners ${meant ?? 'medium'}${onFlag}${s.when ? ` --when ${s.when}` : ''}`,
-              ],
+              // The same scope, flags included.
+              run: [setLine(slug, 'corners', meant ?? 'medium', s)],
             },
           );
         }
@@ -1274,6 +1300,17 @@ export function checkSetting(
               v,
               SPACING.map(([n]) => n),
             ),
+            run: [
+              setLine(
+                slug,
+                'spacing',
+                nearest(
+                  v,
+                  SPACING.map(([n]) => n),
+                )[0] ?? 'roomy',
+                s,
+              ),
+            ],
           },
         );
     } else if (thing === 'text-size') {
@@ -1563,6 +1600,7 @@ export function checkSetting(
       refuse(
         E.ERR_THEME_BAD_VALUE,
         `"more"/"less" work only on dials (${Object.keys(DIALS).join(', ')}). Give ${thing} a ${type} value.`,
+        {run: [setLine(slug, thing, exampleOf(type, thing), s)]},
       );
     checkTypedValue(type, v, thing, TOKENS, C.typeOf, slug);
     checkCycle(thing, v, TOKENS, data);
@@ -1630,7 +1668,7 @@ export function checkSetting(
           also: r0.also,
         });
       } else if (hard.length)
-        s.note = `no effect on ${hard.map(([t]) => t).join(', ')} (they never read ${thing})`;
+        s.note = `the editor's render of ${hard.map(([t]) => t).join(', ')} did not read ${thing} (each part is rendered once, with its default props, so a variant that reads it may be missed); it is set as asked`;
       if (!s.note && recorded.length) {
         const fed = C.feeds(recorded[0][0], thing);
         if (fed.length) s.note = `feeds ${C.fmtFeeds(fed, recorded[0][0])}`;
@@ -1656,6 +1694,8 @@ export function checkSetting(
       // name a token `set` refuses.
       if (r && fed.length)
         s.note = `no part reads ${thing} itself, but ${fed.slice(0, 4).join(', ')} ${fed.length > 1 ? 'are' : 'is'} built from it, so the change shows wherever ${fed.length > 1 ? 'those are' : 'that is'} used${fed.some(k => k.startsWith('--color-syntax-')) ? ' (such as diff rows in code blocks)' : ''}`;
+      else if (r && data.like && baseReads(ctx, data.like, thing))
+        s.note = `the ${data.like} theme's own part styles read ${thing}, so the change shows where they use it`;
       else if (r && dialWrites(thing))
         s.note = `no part of this Core reads ${thing}, and no token it feeds is read, so it changes nothing you see now; it is set as asked because a dial writes it too`;
       // The editor's record of what parts read comes from one render of
@@ -1668,7 +1708,7 @@ export function checkSetting(
     return s;
   }
   const prop = kebab(thing);
-  if (CSS_PROPERTIES.has(prop)) {
+  if (cssProperties().has(prop)) {
     if (!s.on)
       refuse(
         E.ERR_MISSING_ARGUMENT,
@@ -1683,9 +1723,8 @@ export function checkSetting(
     s.source = 'property';
     s.thing = prop;
     if (unset) return s;
-    // Text, headings and links take their color from the color prop, whose
-    // rule Core writes after part styles: a color set on them never shows.
-    const textParts = ['text', 'heading', 'link'];
+    // Text, headings and links take their color from the color prop.
+    const textParts = COLOR_PROP_PARTS;
     if (
       (prop === 'color' || prop === '-webkit-text-fill-color') &&
       partsOf(ctx, s).some(t => textParts.includes(t))
@@ -1770,6 +1809,7 @@ export function checkSetting(
       refuse(
         E.ERR_THEME_BAD_VALUE,
         `"more"/"less" work only on dials. Give ${prop} an exact CSS value.`,
+        {run: [`${HOW} ${prop}`]},
       );
     const grammar = propertyProblem(prop, v);
     if (grammar)
@@ -1862,7 +1902,7 @@ export function checkSetting(
   const meant = kebab(String(thing).trim().replace(/:$/, ''))
     .replace(/[_\s]+/g, '-')
     .replace(/-+/g, '-');
-  if (meant !== prop && CSS_PROPERTIES.has(meant))
+  if (meant !== prop && cssProperties().has(meant))
     refuse(
       E.ERR_THEME_UNKNOWN_THING,
       `"${thing}" is not a dial, a token, or a CSS property; the property is ${meant}.`,
@@ -1919,7 +1959,7 @@ export function checkSetting(
           [`${HOW} --list properties`, `${HOW} --list dials`],
       didYouMean: hint
         ? []
-        : nearest(prop, [...Object.keys(DIALS), ...CSS_PROPERTIES]),
+        : nearest(prop, [...Object.keys(DIALS), ...cssProperties()]),
     },
   );
 }
@@ -1952,9 +1992,8 @@ function refuseInvisibleCorners(ctx, slug, s, data) {
     `${s.on} has no background, border or shadow of its own, so rounding its corners changes nothing you see.${kids.length ? ` Parts inside it that do show an edge: ${kids.join(', ')}.` : ''}`,
     {
       run: kids.length
-        ? kids.map(
-            k =>
-              `${P} set ${slug} corners ${quoteCommandArgument(s.value || 'round')} --on ${k}`,
+        ? kids.map(k =>
+            setLine(slug, 'corners', s.value || 'round', {...s, on: k}),
           )
         : [`${HOW} ${s.on}`],
     },

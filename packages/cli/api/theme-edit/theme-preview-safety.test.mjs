@@ -40,6 +40,11 @@ import {
   FIXTURE_PACKAGES,
   writeFixtureBaseTheme,
 } from '../../test-utils/base-theme-fixture.mjs';
+import {
+  appPackages,
+  projectFiles,
+  refusal,
+} from '../../test-utils/theme-edit-fixture.mjs';
 
 // The page renders cost seconds and these tests read settings, builds and
 // files: a stand-in renders unless a test asks for the real thing.
@@ -49,43 +54,13 @@ vi.mock('./_preview.mjs', async importOriginal =>
   ),
 );
 
-const APP_PACKAGES = {
-  name: 'app',
-  private: true,
-  type: 'module',
-  // The suggested install commands name the app's package manager; the
-  // field makes it the same here as in CI, whatever runs the tests.
-  packageManager: 'npm@10.9.0',
-  dependencies: {
-    '@heroicons/react': '*',
-    'lucide-react': '*',
-    recharts: '*',
-  },
-};
+const APP_PACKAGES = appPackages({packageManager: 'npm@10.9.0'});
 const ROUTE = 'src/app/theme-preview';
 
 /** @type {string} */
 let cwd;
+const {read, exists} = projectFiles(() => cwd);
 
-/** @param {() => Promise<unknown>} fn */
-async function refusal(fn) {
-  try {
-    await fn();
-  } catch (e) {
-    const err = /** @type {any} */ (e);
-    return {
-      code: err.code,
-      message: String(err.message),
-      run: (err.suggestions ?? []).map((/** @type {any} */ s) => s.name),
-    };
-  }
-  throw new Error('expected a refusal');
-}
-
-/** @param {string} rel */
-const read = rel => fs.readFileSync(path.join(cwd, rel), 'utf8');
-/** @param {string} rel */
-const exists = rel => fs.existsSync(path.join(cwd, rel));
 /** @param {string} rel @param {string} text */
 const write = (rel, text) => {
   fs.mkdirSync(path.dirname(path.join(cwd, rel)), {recursive: true});
@@ -505,7 +480,13 @@ describe('preview add', () => {
     const data = JSON.parse(read(`${ROUTE}/theme-preview.json`));
     data.theme = 'vanished';
     write(`${ROUTE}/theme-preview.json`, JSON.stringify(data));
+    const listed = await themeEditPreviewList({cwd});
+    expect(listed.data).toMatchObject({theme: 'vanished', themeMissing: true});
+    expect(listed.data.notes.join(' ')).toContain(
+      'the preview wears vanished, which is gone, so its route does not build; astryx experimental theme preview add switches it to',
+    );
     const r = await themeEditPreviewAdd(undefined, {cwd, template: 'blank'});
+    expect((await themeEditPreviewList({cwd})).data.themeMissing).toBe(false);
     expect(r.data.theme).toBe(null);
     expect(r.data.notes.join(' ')).toContain('wore vanished, which is gone');
   }, 120_000);
@@ -1394,6 +1375,28 @@ describe('final pass', () => {
       fs.readdirSync(path.join(cwd, ROUTE), {recursive: true})
     ).filter(f => /\.tmp$/.test(String(f)));
     expect(left).toEqual([]);
+  }, 120_000);
+
+  it('names a page file a damaged step record left, and remove names it too', async () => {
+    await themeEditPreviewAdd(undefined, {cwd, theme: 'sea'});
+    await stoppedAdd('login', 'rename', 1);
+    write(`${ROUTE}/.theme-preview.pending.json`, '{');
+    const stray = `${ROUTE}/_pages/login.tsx`;
+    expect(exists(stray)).toBe(true);
+    const added = await themeEditPreviewAdd(undefined, {
+      cwd,
+      template: 'blank',
+    });
+    expect(JSON.stringify(added.data)).toContain(
+      `${stray} is in no preview record and may be from that change, so it stays until you remove it`,
+    );
+    const removed = await themeEditPreviewRemove(undefined, {cwd});
+    expect(removed.data.kept).toContain(stray);
+    expect(removed.data.notes.join(' ')).toContain(
+      `${stray} is kept: the preview has no record of writing it`,
+    );
+    expect(exists(stray)).toBe(true);
+    fs.rmSync(path.join(cwd, ROUTE), {recursive: true, force: true});
   }, 120_000);
 
   it('suggests a plain remove, not an add that is refused, for a folder that holds the app', async () => {
