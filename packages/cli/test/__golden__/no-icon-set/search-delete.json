@@ -17,6 +17,17 @@
         "mentions": []
       },
       {
+        "domain": "hook",
+        "name": "createSwipe",
+        "package": "@astryxdesign/core",
+        "score": "<text>",
+        "reason": "<text>",
+        "description": "<text>",
+        "import": "@astryxdesign/core/Swipe",
+        "command": "astryx hook createSwipe",
+        "mentions": []
+      },
+      {
         "domain": "doc",
         "name": "global/uninstall",
         "package": "@astryxdesign/cli",

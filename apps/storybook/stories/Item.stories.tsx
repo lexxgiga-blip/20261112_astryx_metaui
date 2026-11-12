@@ -19,6 +19,7 @@ import {Icon} from '@astryxdesign/core/Icon';
 import {Text} from '@astryxdesign/core/Text';
 import {Stack} from '@astryxdesign/core/Layout';
 import {List, ListItem} from '@astryxdesign/core/List';
+import {createSwipe} from '@astryxdesign/core/Swipe';
 import {RadioList, RadioListItem} from '@astryxdesign/core/RadioList';
 import {StatusDot} from '@astryxdesign/core/StatusDot';
 
@@ -571,13 +572,14 @@ export const AlignFirstLine: Story = {
 };
 
 /**
- * Swipe actions, as a mail list uses them: on a touch screen a drag toward
- * the inline start uncovers Archive and Delete (Delete outermost, so a long
- * drag or a fling fires it); a drag toward the inline end uncovers a
- * read/unread toggle. Under `reveal` (the default) the row rests open with
- * every entry a real button. Every verb is also in the row's own content, so
- * a mouse and a keyboard reach it without the gesture. `List` clips the rows
- * in the inline axis for the slide.
+ * Swipe actions, as a mail list uses them. On a touch screen a drag toward
+ * the inline start uncovers Archive and Delete, with Delete outermost. Under
+ * `reveal` (the default), a fling or a long drag rests that side open with
+ * every entry a real button. A drag that starts on the open row fires Delete.
+ * A drag toward the inline end uncovers a read/unread toggle, which a long
+ * drag fires. Every verb is also in the row's own content, so a mouse and a
+ * keyboard reach it without the gesture. `List` clips the rows in the inline
+ * axis for the slide.
  */
 export const SwipeActions: Story = {
   render: () => {
@@ -609,9 +611,10 @@ export const SwipeActions: Story = {
                 {row.isUnread ? 'Mark read' : 'Mark unread'} · Archive · Delete
               </Text>
             }
-            swipeActions={{
+            swipe={createSwipe({
               leading: [
                 {
+                  id: 'read',
                   label: row.isUnread ? 'Read' : 'Unread',
                   icon: <Icon icon={EnvelopeIcon} size="sm" />,
                   onActivate: () => toggleRead(row.id),
@@ -619,6 +622,7 @@ export const SwipeActions: Story = {
               ],
               trailing: [
                 {
+                  id: 'archive',
                   label: 'Archive',
                   icon: <Icon icon={ArchiveBoxIcon} size="sm" />,
                   onActivate: () => remove(row.id),
@@ -626,6 +630,7 @@ export const SwipeActions: Story = {
                   hasRemoval: true,
                 },
                 {
+                  id: 'delete',
                   label: 'Delete',
                   icon: <Icon icon={TrashIcon} size="sm" />,
                   onActivate: () => remove(row.id),
@@ -633,7 +638,7 @@ export const SwipeActions: Story = {
                   hasRemoval: true,
                 },
               ],
-            }}
+            })}
           />
         ))}
         {rows.length === 0 && <ListItem label="All done." />}
@@ -643,7 +648,7 @@ export const SwipeActions: Story = {
 };
 
 /**
- * `swipeBehavior="commit"`: one verb per side; a release past the commit
+ * `swipeBehavior: 'commit'`: one verb per side; a release past the commit
  * point slides the row out and fires it, and nothing rests. The panel is
  * presentational.
  */
@@ -666,10 +671,10 @@ export const SwipeCommit: Story = {
             description="Swipe toward the start to dismiss"
             onClick={() => {}}
             endContent={<Text color="secondary">Dismiss</Text>}
-            swipeBehavior="commit"
-            swipeActions={{
+            swipe={createSwipe({
               trailing: [
                 {
+                  id: 'dismiss',
                   label: 'Dismiss',
                   icon: <Icon icon={TrashIcon} size="sm" />,
                   onActivate: () => remove(row.id),
@@ -677,7 +682,8 @@ export const SwipeCommit: Story = {
                   hasRemoval: true,
                 },
               ],
-            }}
+              swipeBehavior: 'commit',
+            })}
           />
         ))}
         {rows.length === 0 && <ListItem label="All caught up." />}
