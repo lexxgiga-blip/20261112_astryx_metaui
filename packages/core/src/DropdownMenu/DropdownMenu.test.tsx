@@ -3644,10 +3644,12 @@ describe('DropdownMenu press model', () => {
         fireEvent.pointerDown(trigger, mouse);
         fireEvent.pointerUp(trigger, mouse);
       });
-      await act(async () => {
-        await Promise.resolve();
-      });
-      expect(trigger).toHaveAttribute('aria-expanded', 'true');
+      // The replay lands while the release is handled, so the show waits for
+      // the release's click, or the next task when none comes (layer-runtime
+      // INV7a).
+      await waitFor(() =>
+        expect(trigger).toHaveAttribute('aria-expanded', 'true'),
+      );
       expect(captured).toEqual([]);
       expect(trigger).not.toHaveAttribute('popovertarget');
     });
