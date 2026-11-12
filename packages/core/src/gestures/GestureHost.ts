@@ -172,6 +172,7 @@ import type {
   TouchConsumer,
   TouchInput,
   TouchSample,
+  TouchModifiers,
 } from './types';
 import {internals} from './recognizerInternals';
 import {
@@ -416,6 +417,18 @@ function landedOn(
     return retargeted;
   }
   return event.composedPath()[0] ?? retargeted;
+}
+
+/** The modifier keys an input event reports, for the contact it begins. */
+function modifierKeysOf(
+  event: Pick<MouseEvent, 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey'>,
+): TouchModifiers {
+  return {
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
+    altKey: event.altKey,
+  };
 }
 
 /**
@@ -3063,6 +3076,7 @@ export class GestureHost {
           time,
           pointerType: 'touch',
           target,
+          ...modifierKeysOf(event),
         });
         continue;
       }
@@ -3100,6 +3114,7 @@ export class GestureHost {
         scroll: createNativeScrollProbe(target),
         recognizers,
         consumer,
+        ...modifierKeysOf(event),
       });
     }
     if (stale.length > 0) {
@@ -3788,6 +3803,7 @@ export class GestureHost {
         scroll: createNativeScrollProbe(target),
         recognizers,
         consumer,
+        ...modifierKeysOf(event),
       },
     ]);
     if (
