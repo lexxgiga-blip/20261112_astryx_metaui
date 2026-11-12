@@ -5,11 +5,13 @@
 /**
  * @file keyboardHeight.ts
  * @input The visual viewport, the window's input stream (focus, blur,
- *   resize, scroll and touch), and the layout viewport's height
+ *   resize, scroll and touch), the layout viewport's height and the root's
+ *   box
  * @output The on-screen keyboard module: measureKeyboardHeight,
  *   isKeyboardMeasurable, hasVirtualKeyboard, subscribeKeyboardHeight,
- *   getKeyboardHeight, isTextEntryControl, findTextEntryControl,
- *   refuseFocusReveal and watchRevealPan
+ *   getKeyboardHeight, getResizedRoom,
+ *   isTextEntryControl, findTextEntryControl, refuseFocusReveal,
+ *   watchRevealPan and panVisualViewportTo
  * @position Core's one source for the on-screen keyboard. It is internal to
  *   core and never exported from the package.
  *
@@ -18,7 +20,8 @@
 
 import {armClickGuard} from '../utils/clickGuard';
 import {matchesMediaQuery} from '../utils/coarsePointer';
-import {subscribeInput} from '../utils/inputStream';
+import {getTouches, subscribeInput} from '../utils/inputStream';
+import {deepActiveElement} from '../utils/flatTree';
 import {isNode} from '../utils/nodeType';
 import {layoutViewportHeight} from '../utils/layoutViewport';
 import {PRESS_SLOP_PX} from '../utils/pressGesture';
@@ -59,7 +62,8 @@ const NON_TEXT_INPUT_TYPES = new Set([
  * shrinks for a keyboard, so it reads 0. Where the app sets
  * `interactive-widget=resizes-content`, Chrome shrinks the layout viewport
  * with the keyboard. The height is then 0 too, and nothing rides, because the
- * browser has made the room itself.
+ * browser has made the room itself. A focused field still keeps its clearance
+ * above the layout viewport's new bottom (getResizedRoom).
  */
 export function isKeyboardMeasurable(win: Window): boolean {
   return win.visualViewport != null && win.self === win.top;
@@ -101,6 +105,17 @@ export type KeyboardHeightEvent =
 
 interface KeyboardStore {
   height: number;
+  /** The input stream's touch starts at the last hide, or null before one. */
+  startsAtHide: number | null;
+  /** The room the browser made by shrinking the root's box (getResizedRoom). */
+  room: number;
+  /** The root's box width at the last report that measured the room. */
+  rootWidth: number;
+  /**
+   * The tallest the root's box has been at each width it had. The store keeps
+   * them across subscriptions, so a turn of the phone and back keeps the room.
+   */
+  rootTallest: Map<number, number>;
   listeners: Set<(event: KeyboardHeightEvent) => void>;
   /** The subscribers that asked for focus moves too (the layout guide). */
   focusListeners: Set<(event: KeyboardHeightEvent) => void>;
@@ -118,6 +133,10 @@ function storeOf(win: Window): KeyboardStore {
   if (store == null) {
     store = {
       height: 0,
+      startsAtHide: null,
+      room: 0,
+      rootWidth: 0,
+      rootTallest: new Map(),
       listeners: new Set(),
       focusListeners: new Set(),
       detach: null,
@@ -148,16 +167,59 @@ function isHideStep(win: Window, shown: number, height: number): boolean {
   );
 }
 
+// The root's box. Chrome on Android keeps it at the viewport with its toolbar
+// shown, and `interactive-widget=resizes-content` shrinks it with the
+// keyboard. So the toolbar's moves change `innerHeight`, but not this room.
+function measureResizedRoom(
+  win: Window,
+  store: KeyboardStore,
+  keyboardHeight: number,
+): number {
+  if (!isKeyboardMeasurable(win)) {
+    return 0;
+  }
+  const root = win.document.documentElement;
+  const height = root.clientHeight;
+  // A root with no box yet, as before layout, makes no room.
+  if (!(height > 0)) {
+    return 0;
+  }
+  const width = root.clientWidth;
+  store.rootWidth = width;
+  const tallest = store.rootTallest.get(width) ?? 0;
+  if (height > tallest) {
+    store.rootTallest.set(width, height);
+    return 0;
+  }
+  if (keyboardHeight > KEYBOARD_EPSILON) {
+    return 0;
+  }
+  // A window that gets shorter with no text entry focused, as in Android's
+  // split screen, makes no room for a keyboard.
+  const room = tallest - height;
+  return room > KEYBOARD_EPSILON &&
+    isTextEntryControl(deepActiveElement(win.document))
+    ? room
+    : 0;
+}
+
 function attach(win: Window, store: KeyboardStore): () => void {
   const viewport = win.visualViewport;
   store.height = measureKeyboardHeight(win);
+  store.room = measureResizedRoom(win, store, store.height);
   // Set while a step of a hide waits. The store keeps the height it reported,
   // so every reader lays out once, when the keyboard comes to rest.
   let stepTimer: ReturnType<typeof setTimeout> | null = null;
   let stepHeight = 0;
   let stepLimit = 0;
   const deliver = (height: number, timeStamp: number) => {
+    const wasUp =
+      store.height > KEYBOARD_EPSILON || store.room > KEYBOARD_EPSILON;
     store.height = height;
+    store.room = measureResizedRoom(win, store, height);
+    if (wasUp && height <= KEYBOARD_EPSILON && store.room <= KEYBOARD_EPSILON) {
+      store.startsAtHide = getTouches(win).starts;
+    }
     const report: KeyboardHeightEvent = {type: 'viewport', height, timeStamp};
     for (const listener of [...store.listeners]) {
       listener(report);
@@ -284,6 +346,62 @@ export function subscribeKeyboardHeight(
       store.detach = null;
     }
   };
+}
+
+/**
+ * Whether a finger is on `win`'s screen, from the input stream's count. A
+ * finger that was down at the keyboard's last hide counts no more until a
+ * touch starts. A touch whose target leaves the page ends at a node the
+ * window never hears.
+ */
+export function isFingerOnScreen(win: Window): boolean {
+  const startsAtHide = stores.get(win)?.startsAtHide;
+  const touches = getTouches(win);
+  return (
+    touches.fingers > 0 &&
+    (startsAtHide == null || touches.starts !== startsAtHide)
+  );
+}
+
+/** The room a browser makes for the keyboard, and the width it is read at. */
+export interface ResizedRoom {
+  /** The room, CSS px. */
+  readonly room: number;
+  /** The root's box width the room is measured at, CSS px. */
+  readonly width: number;
+}
+
+/**
+ * The room the browser makes for the keyboard by shrinking the layout
+ * viewport, CSS px. Chrome on Android does so under
+ * `interactive-widget=resizes-content`, where the keyboard height reads 0.
+ * It is how far the root's box is short of the tallest it has been at the
+ * same width. The toolbar's moves leave the root's box as it is. The room is
+ * 0 while the visual viewport measures a keyboard. While the module listens,
+ * it is the room measured at the last report, so every reader shares that one
+ * layout read. The module keeps the tallest box per width across
+ * subscriptions. A width first measured with such a keyboard up reads 0 until
+ * that keyboard goes. That happens after a turn of the phone, or for a
+ * window's first reader.
+ *
+ * It comes with the root's box width it is measured at. While the module
+ * listens, that width is the one read with the room at the last report, so
+ * it adds no layout read.
+ *
+ * @example
+ * ```
+ * const isKeyboardUp =
+ *   getKeyboardHeight(window) > 0 || getResizedRoom(window).room > 0;
+ * const hasTurned = getResizedRoom(window).width !== widthAtReveal;
+ * ```
+ */
+export function getResizedRoom(win: Window): ResizedRoom {
+  const store = storeOf(win);
+  if (store.detach != null) {
+    return {room: store.room, width: store.rootWidth};
+  }
+  const room = measureResizedRoom(win, store, measureKeyboardHeight(win));
+  return {room, width: win.document.documentElement.clientWidth};
 }
 
 /**
@@ -468,6 +586,14 @@ export interface WatchRevealPanOptions {
   owns: (focused: HTMLElement) => boolean;
   /** Called on every touch start, which ends the watch for the report. */
   onTouch?: () => void;
+  /**
+   * Whether a document scroll can be part of the browser's reveal, which
+   * `putBack` then scrolls back too. Set it for a fixed field in Chrome on
+   * Android. Its reveal centres the field's document position, then pans as far
+   * as the keyboard's room allows. Only a match counts. Keep it false where
+   * Safari runs: it carries out an app's document scroll as an offset.
+   */
+  documentScrollIsReveal?: boolean;
 }
 
 /** A watch for the browser's own reveal pan (see watchRevealPan). */
@@ -480,6 +606,7 @@ export interface RevealPanWatch {
    * Pans the visual viewport back to where it sat at the report, without
    * scrolling the document. It scrolls `anchor` into view, an element fixed at
    * the layout viewport's top, or else a probe fixed where the viewport sat.
+   * With `documentScrollIsReveal`, it first scrolls the document back too.
    */
   putBack: (anchor?: Element | null) => void;
   /** Ends the watch; the shared touch subscription goes with the last watch. */
@@ -502,12 +629,22 @@ function watchTouchStarts(doc: Document, onTouchStart: () => void): () => void {
       return () => {};
     }
     const watches = new Set<() => void>();
-    const stop = subscribeInput(view, 'touchstart', () => {
+    const stopStarts = subscribeInput(view, 'touchstart', () => {
       for (const watch of [...watches]) {
         watch();
       }
     });
-    shared = {stop, watches};
+    // Heard so the stream counts the fingers on the screen (isFingerOnScreen).
+    const stopEnds = subscribeInput(view, 'touchend', () => {});
+    const stopCancels = subscribeInput(view, 'touchcancel', () => {});
+    shared = {
+      stop: () => {
+        stopStarts();
+        stopEnds();
+        stopCancels();
+      },
+      watches,
+    };
     touchStartWatches.set(doc, shared);
   }
   shared.watches.add(onTouchStart);
@@ -531,8 +668,9 @@ function watchTouchStarts(doc: Document, onTouchStart: () => void): () => void {
  * 170 ms after it. The page gets no frame until that pan ends. Such a pan
  * moves the visual viewport down within the
  * layout viewport. Since the report there is no touch, document scroll or
- * zoom, and a text field the caller owns has focus. The watch reads the
- * behavior, never the user agent. The caller lands its field itself and
+ * zoom, and a text field the caller owns has focus. In Chrome, a reveal of a
+ * field in a fixed container also scrolls the document first. The watch reads
+ * the behavior, never the user agent. The caller lands its field itself and
  * puts the pan back. Every keyboard-aware surface can use it.
  *
  * @example
@@ -544,12 +682,15 @@ function watchTouchStarts(doc: Document, onTouchStart: () => void): () => void {
  */
 export function watchRevealPan(
   win: Window,
-  {owns, onTouch}: WatchRevealPanOptions,
+  {owns, onTouch, documentScrollIsReveal = false}: WatchRevealPanOptions,
 ): RevealPanWatch {
   const doc = win.document;
   let atReport: {x: number; y: number; top: number; scale: number} | null =
     null;
   let touchedSinceReport = false;
+  // Whether a scroll is Chrome's reveal. The watch decides it once per report
+  // and after each put-back, so later scrolls read no layout.
+  let isChromeReveal: boolean | null = null;
   const stopTouchStarts = watchTouchStarts(doc, () => {
     touchedSinceReport = true;
     onTouch?.();
@@ -566,7 +707,10 @@ export function watchRevealPan(
               top: viewport.offsetTop,
               scale: viewport.scale,
             };
-      touchedSinceReport = false;
+      // A report while a finger is down, as when Firefox's toolbar hides in
+      // a drag, leaves that drag's pan to the person.
+      touchedSinceReport = isFingerOnScreen(win);
+      isChromeReveal = null;
     },
     isRevealPan: height => {
       const viewport = win.visualViewport;
@@ -578,39 +722,101 @@ export function watchRevealPan(
         height > 0 &&
         viewport.offsetTop > atReport.top &&
         viewport.scale === atReport.scale &&
-        win.scrollX === atReport.x &&
-        win.scrollY === atReport.y &&
         focused instanceof HTMLElement &&
         isTextEntryControl(focused) &&
-        owns(focused)
+        owns(focused) &&
+        ((win.scrollX === atReport.x && win.scrollY === atReport.y) ||
+          (documentScrollIsReveal &&
+            (isChromeReveal ??= isCentringReveal(
+              win,
+              viewport,
+              focused,
+              atReport,
+            ))))
       );
     },
     putBack: anchor => {
+      isChromeReveal = null;
       const options: ScrollIntoViewOptions = {
         block: 'start',
         inline: 'nearest',
         behavior: 'instant',
       };
+      if (
+        documentScrollIsReveal &&
+        atReport != null &&
+        (win.scrollX !== atReport.x || win.scrollY !== atReport.y)
+      ) {
+        win.scrollTo({
+          left: atReport.x,
+          top: atReport.y,
+          behavior: 'instant',
+        });
+      }
       if (anchor != null) {
         anchor.scrollIntoView(options);
         return;
       }
-      // A fixed element sits in the layout viewport, which the pan does not
-      // move: scrolling its top into view pans the visual viewport back.
-      const probe = doc.createElement('div');
-      probe.style.position = 'fixed';
-      probe.style.left = '0';
-      probe.style.top = `${atReport?.top ?? 0}px`;
-      probe.style.width = '1px';
-      probe.style.height = '1px';
-      probe.style.visibility = 'hidden';
-      probe.style.pointerEvents = 'none';
-      (doc.body ?? doc.documentElement).append(probe);
-      probe.scrollIntoView(options);
-      probe.remove();
+      panVisualViewportTo(win, atReport?.top ?? 0);
     },
     stop: stopTouchStarts,
   };
+}
+
+// How far a scroll or a pan may sit from Chrome's reveal: rounding.
+const CENTRING_SLACK_PX = 2;
+
+// Whether the scroll and the pan since the report match Chrome's reveal of a
+// fixed `field` (documentScrollIsReveal), not an app's scroll elsewhere.
+function isCentringReveal(
+  win: Window,
+  viewport: VisualViewport,
+  field: HTMLElement,
+  atReport: {x: number; y: number},
+): boolean {
+  const box = field.getBoundingClientRect();
+  const centring = (box.top + box.bottom) / 2 - viewport.height / 2;
+  const root = win.document.scrollingElement ?? win.document.documentElement;
+  const range = root.scrollHeight - root.clientHeight;
+  const room = layoutViewportHeight(win) - viewport.height;
+  const scroll = Math.min(range, Math.max(0, atReport.y + centring));
+  const pan = Math.min(room, Math.max(0, centring));
+  return (
+    win.scrollX === atReport.x &&
+    Math.abs(win.scrollY - scroll) <= CENTRING_SLACK_PX &&
+    Math.abs(viewport.offsetTop - pan) <= CENTRING_SLACK_PX
+  );
+}
+
+/**
+ * Pans the visual viewport so its top sits `top` CSS px down the layout
+ * viewport, without scrolling the document. A probe fixed there is scrolled
+ * into view. In Chrome for Android this pans the visual viewport. In Firefox
+ * for Android it pans nothing where the page has no scroll range. The pan
+ * reaches the room the keyboard takes, which a document scroll cannot.
+ *
+ * @example
+ * ```
+ * panVisualViewportTo(window, window.visualViewport.offsetTop + 120);
+ * ```
+ */
+export function panVisualViewportTo(win: Window, top: number): void {
+  const doc = win.document;
+  const probe = doc.createElement('div');
+  probe.style.position = 'fixed';
+  probe.style.left = '0';
+  probe.style.top = `${top}px`;
+  probe.style.width = '1px';
+  probe.style.height = '1px';
+  probe.style.visibility = 'hidden';
+  probe.style.pointerEvents = 'none';
+  (doc.body ?? doc.documentElement).append(probe);
+  probe.scrollIntoView({
+    block: 'start',
+    inline: 'nearest',
+    behavior: 'instant',
+  });
+  probe.remove();
 }
 
 /** The caller's rules for claimTapFocus. */
